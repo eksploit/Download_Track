@@ -1,0 +1,28 @@
+# ---------- build stage ----------
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /app
+
+# копируем модули и тянем зависимости
+COPY go.mod go.sum ./
+RUN go mod download
+
+# копируем весь исходный код
+COPY . .
+
+# собираем бинарь HTTP-сервиса
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o http-service ./cmd/http-service
+
+# ---------- run stage ----------
+FROM alpine:3.19
+
+WORKDIR /app
+RUN apk --no-cache add ca-certificates
+
+COPY --from=builder /app/http-service .
+
+EXPOSE 8080
+
+ENV DB_DSN="postgres://user:pass@postgres:5432/filemailer?sslmode=disable"
+
+CMD ["./http-service"]

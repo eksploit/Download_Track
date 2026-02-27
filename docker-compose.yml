@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: filemailer-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  http-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.http
+    container_name: filemailer-http
+    depends_on:
+      - postgres
+    environment:
+      DB_DSN: ${DB_DSN}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_FROM: ${SMTP_FROM}
+    ports:
+      - "8080:8080"
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: filemailer-bot
+    depends_on:
+      - http-service
+    environment:
+      DB_DSN: ${DB_DSN}
+      API_BASE: http://http-service:8080
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+
+volumes:
+  pgdata:
