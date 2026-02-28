@@ -1,13 +1,13 @@
 # Download Track Bot
 
 <<<<<<< HEAD
-Телеграм‑бот и HTTP‑сервис на Go для отправки файлов с URL на email пользователя. [web:12][web:63]
+Телеграм‑бот и HTTP‑сервис на Go для отправки файлов с URL на email пользователя.
 
 ## Возможности
 
-- Регистрация пользователя по команде `/register email@example.com`, генерация API‑ключа. [web:12]
-- Приём любых сообщений с URL, проксирование ссылки в HTTP‑сервис. [web:22]
-- HTTP‑сервис скачивает файл по URL и отправляет его как вложение на зарегистрированный email (SMTP). [web:57]
+- Регистрация пользователя по команде `/register email@example.com`, генерация API‑ключа.
+- Приём любых сообщений с URL, проксирование ссылки в HTTP‑сервис.
+- HTTP‑сервис скачивает файл по URL и отправляет его как вложение на зарегистрированный email (SMTP).
 =======
 Телеграм‑бот и HTTP‑сервис на Go для отправки файлов с URL на email пользователя.
 
@@ -23,7 +23,7 @@
 ## Стек
 
 <<<<<<< HEAD
-- Go, `github.com/go-telegram-bot-api/telegram-bot-api/v5` для бота. [web:12][web:63]
+- Go, `github.com/go-telegram-bot-api/telegram-bot-api/v5` для бота.
 =======
 - Go, `github.com/go-telegram-bot-api/telegram-bot-api/v5` для бота.
 >>>>>>> a9aba9c (обновил)
