@@ -39,6 +39,7 @@ services:
       DB_DSN: ${DB_DSN}
       API_BASE: http://http-service:8080
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID}
 
 volumes:
   pgdata:
