@@ -1,14 +1,11 @@
 # Download Track Bot
-
-
 Телеграм‑бот и HTTP‑сервис на Go для отправки файлов с URL на email пользователя.
-
 ## Возможности
 
 - Регистрация пользователя по команде `/register email@example.com`, генерация API‑ключа.
 - Приём любых сообщений с URL, проксирование ссылки в HTTP‑сервис.
 - HTTP‑сервис скачивает файл по URL и отправляет его как вложение на зарегистрированный email (SMTP).
-- 
+
 Телеграм‑бот и HTTP‑сервис на Go для отправки файлов с URL на email пользователя.
 
 ## Возможности
@@ -21,7 +18,6 @@
 
 ## Стек
 
-- Go, `github.com/go-telegram-bot-api/telegram-bot-api/v5` для бота.
 - Go, `github.com/go-telegram-bot-api/telegram-bot-api/v5` для бота.
 - PostgreSQL для хранения пользователей и заявок.
 - Docker Compose для запуска `bot`, `http-service` и `postgres`.
