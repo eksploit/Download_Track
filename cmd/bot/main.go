@@ -11,7 +11,6 @@ import (
     "log"
     "net/http"
     "os"
-    "regexp"
     "strconv"
     "strings"
 	"time"
@@ -27,8 +26,6 @@ type Bot struct {
     apiBase     string
     adminChatID int64
 }
-
-var urlRe = regexp.MustCompile(`https?://\S+`)
 
 type sendReq struct {
     APIKey  string `json:"api_key"`
@@ -238,7 +235,7 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
         return
     }
 
-    url := urlRe.FindString(text)
+	url := extractFirstURL(m)
     if url == "" {
         b.send(chatID, "Не нашёл ссылку в сообщении.")
         return
@@ -583,6 +580,35 @@ func (b *Bot) requestEmailChange(telegramID int64, username string, newEmail str
     }
 
     return nil
+}
+//парсинг ссылок
+func extractFirstURL(m *tgbotapi.Message) string {
+    if m == nil {
+        return ""
+    }
+
+    runes := []rune(m.Text)
+
+    for _, e := range m.Entities {
+        if e.IsURL() {
+            start := e.Offset
+            end := e.Offset + e.Length
+            if start < 0 || end > len(runes) {
+                continue
+            }
+            return string(runes[start:end])
+        }
+
+        if e.IsTextLink() {
+            u, err := e.ParseURL()
+            if err != nil {
+                continue
+            }
+            return u.String()
+        }
+    }
+
+    return ""
 }
 
 func generateAPIKey() (string, error) {

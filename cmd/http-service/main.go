@@ -51,7 +51,7 @@ func main() {
 	}
 
 	// Лог-файл для истории отправок
-	f, err := os.OpenFile("send.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile("/logs/send.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal("open send.log:", err)
 	}
