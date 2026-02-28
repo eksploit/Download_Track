@@ -9,10 +9,12 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"net/mail"
 	"os"
 	"time"
 	"crypto/tls"
-
+	"path"
+	"github.com/scorredoira/email"
 	_ "github.com/lib/pq"
 )
 
@@ -139,49 +141,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	s.jobLog.Printf("user_id=%d username=%s url=%s status=received\n", userID, username, req.FileURL)
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-	}
+	// Логируем старт скачивания без предварительной проверки размера
+    s.jobLog.Printf("user_id=%d username=%s url=%s status=downloading\n", userID, username, req.FileURL)
 
-	headReq, err := http.NewRequest(http.MethodHead, req.FileURL, nil)
-	if err != nil {
-		log.Println("head request build err:", err)
-		s.jobLog.Printf("user_id=%d username=%s url=%s status=head_build_error error=%q\n", userID, username, req.FileURL, err.Error())
-		http.Error(w, "cannot build head request", http.StatusBadRequest)
-		return
-	}
-
-	resp, err := client.Do(headReq)
-	if err != nil {
-		log.Println("head request err:", err)
-		s.jobLog.Printf("user_id=%d username=%s url=%s status=head_error error=%q\n", userID, username, req.FileURL, err.Error())
-		http.Error(w, "cannot get file size", http.StatusBadGateway)
-		return
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		s.jobLog.Printf("user_id=%d username=%s url=%s status=head_bad_status http_status=%d\n", userID, username, req.FileURL, resp.StatusCode)
-		http.Error(w, "bad status from file server", http.StatusBadGateway)
-		return
-	}
-
-	size := resp.ContentLength
-	if size <= 0 {
-		s.jobLog.Printf("user_id=%d username=%s url=%s status=size_unknown content_length=%d\n", userID, username, req.FileURL, size)
-		http.Error(w, "file size unknown", http.StatusBadGateway)
-		return
-	}
-
-	if size > maxFileSize {
-		s.jobLog.Printf("user_id=%d username=%s url=%s status=too_large size=%d\n", userID, username, req.FileURL, size)
-		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	s.jobLog.Printf("user_id=%d username=%s url=%s status=size_ok size=%d\n", userID, username, req.FileURL, size)
-
-	s.jobLog.Printf("user_id=%d username=%s url=%s status=downloading\n", userID, username, req.FileURL)
 
 	getClient := &http.Client{
 		Timeout: 0,
@@ -202,13 +164,20 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmpFile, err := os.CreateTemp("", "download-*")
-	if err != nil {
-		log.Println("temp file create err:", err)
-		s.jobLog.Printf("user_id=%d username=%s url=%s status=download_error stage=tempfile error=%q\n", userID, username, req.FileURL, err.Error())
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
+	// Имя файла из URL (последний сегмент пути)
+    urlFileName := path.Base(req.FileURL)
+    if urlFileName == "." || urlFileName == "/" || urlFileName == "" {
+        urlFileName = "downloaded-file"
+    }
+
+    // Временный файл с этим именем как суффиксом
+    tmpFile, err := os.CreateTemp("", "download-*-" + urlFileName)
+    if err != nil {
+        log.Println("temp file create err:", err)
+        s.jobLog.Printf("user_id=%d username=%s url=%s status=download_error stage=tempfile error=%q\n", userID, username, req.FileURL, err.Error())
+        http.Error(w, "internal error", http.StatusInternalServerError)
+        return
+    }
 	defer func() {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())
@@ -226,91 +195,100 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		"user_id=%d username=%s url=%s status=downloaded size=%d path=%s\n",
 		userID, username, req.FileURL, written, tmpFile.Name(),
 	)
+	    // Получаем email пользователя
+    var emailAddr string
+    err = s.db.QueryRow("SELECT email FROM users WHERE id=$1", userID).Scan(&emailAddr)
+    if err != nil {
+        log.Println("db query email err:", err)
+        s.jobLog.Printf("user_id=%d username=%s url=%s status=send_error stage=get_email error=%q\n",
+            userID, username, req.FileURL, err.Error())
+        http.Error(w, "internal error", http.StatusInternalServerError)
+        return
+    }
 
-	var email string
-	err = s.db.QueryRow("SELECT email FROM users WHERE id=$1", userID).Scan(&email)
-	if err != nil {
-		log.Println("db query email err:", err)
-		s.jobLog.Printf("user_id=%d username=%s url=%s status=send_error stage=get_email error=%q\n", userID, username, req.FileURL, err.Error())
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
+    // Тема с датой/временем
+    now := time.Now()
+    subject := fmt.Sprintf("Скачанный файл на %s", now.Format("2006-01-02 15:04:05"))
 
-	subject := "Ваш файл скачан"
-	body := fmt.Sprintf("Файл по ссылке %s был успешно скачан. Размер: %d байт.\n", req.FileURL, written)
+    // Текст письма остаётся информативным
+    body := fmt.Sprintf("Файл по ссылке %s был успешно скачан. Размер: %d байт.\n", req.FileURL, written)
 
-	if err := s.sendEmail(email, subject, body); err != nil {
+	// Передаём путь к временно скачанному файлу как вложение
+	if err := s.sendEmail(emailAddr, subject, body, tmpFile.Name()); err != nil {
 		log.Println("sendEmail err:", err)
-		s.jobLog.Printf("user_id=%d username=%s email=%s url=%s status=send_error stage=smtp error=%q\n", userID, username, email, req.FileURL, err.Error())
+		s.jobLog.Printf("user_id=%d username=%s email=%s url=%s status=send_error stage=smtp error=%q\n",
+			userID, username, emailAddr, req.FileURL, err.Error())
 		http.Error(w, "email send failed", http.StatusBadGateway)
 		return
 	}
 
-	s.jobLog.Printf("user_id=%d username=%s email=%s url=%s status=sent size=%d\n", userID, username, email, req.FileURL, written)
+    s.jobLog.Printf("user_id=%d username=%s email=%s url=%s status=sent size=%d\n",
+        userID, username, emailAddr, req.FileURL, written)
 
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte("ok"))
+
 }
 
-func (s *Server) sendEmail(to, subject, body string) error {
+func (s *Server) sendEmail(to, subject, body, attachmentPath string) error {
     if s.smtpHost == "" || s.smtpPort == "" || s.fromAddr == "" {
         return fmt.Errorf("smtp config incomplete")
     }
 
+    m := email.NewMessage(subject, body)
+    m.From = mail.Address{
+        Name:    "filemailer",
+        Address: s.fromAddr,
+    }
+    m.To = []string{to}
+
+    if attachmentPath != "" {
+        if err := m.Attach(attachmentPath); err != nil {
+            return fmt.Errorf("attach file: %w", err)
+        }
+    }
+
     addr := s.smtpHost + ":" + s.smtpPort
 
-    msg := []byte(
-        "To: " + to + "\r\n" +
-            "Subject: " + subject + "\r\n" +
-            "MIME-Version: 1.0\r\n" +
-            "Content-Type: text/plain; charset=\"UTF-8\"\r\n" +
-            "\r\n" +
-            body + "\r\n",
-    )
-
-    // 1) TCP
     conn, err := net.Dial("tcp", addr)
     if err != nil {
-        return err
+        return fmt.Errorf("dial smtp: %w", err)
     }
     defer conn.Close()
 
-    // 2) SMTP client
     c, err := smtp.NewClient(conn, s.smtpHost)
     if err != nil {
-        return err
+        return fmt.Errorf("smtp new client: %w", err)
     }
     defer c.Quit()
 
-    // 3) STARTTLS с проверкой LE-сертификата
     if ok, _ := c.Extension("STARTTLS"); ok {
         tlsconfig := &tls.Config{
-            ServerName: s.smtpHost, // "mail.downlfilet.ru"
+            ServerName: s.smtpHost,
         }
         if err = c.StartTLS(tlsconfig); err != nil {
-            return err
+            return fmt.Errorf("starttls: %w", err)
         }
     }
 
-    // 4) Без auth, relay по mynetworks
     if err = c.Mail(s.fromAddr); err != nil {
-        return err
+        return fmt.Errorf("mail from: %w", err)
     }
     if err = c.Rcpt(to); err != nil {
-        return err
+        return fmt.Errorf("rcpt to: %w", err)
     }
 
     w, err := c.Data()
     if err != nil {
-        return err
+        return fmt.Errorf("data: %w", err)
     }
-    if _, err = w.Write(msg); err != nil {
-        return err
+
+    if _, err = w.Write(m.Bytes()); err != nil {
+        return fmt.Errorf("write mime: %w", err)
     }
     if err = w.Close(); err != nil {
-        return err
+        return fmt.Errorf("data close: %w", err)
     }
 
     return nil
 }
-
