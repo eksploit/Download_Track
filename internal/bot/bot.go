@@ -13,9 +13,24 @@ import (
     "strconv"
     "strings"
     "time"
+    "path"
 
     tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
+
+var gmailBlockedExts = map[string]bool{
+    ".exe": true,
+    ".msi": true,
+    ".bat": true,
+    ".cmd": true,
+    ".com": true,
+    ".scr": true,
+    ".js":  true,
+    ".vbs": true,
+    ".ps1": true,
+    ".sh":  true,
+}
+
 var ErrAlreadyRegistered = errors.New("already registered")
 type Bot struct {
     api         *tgbotapi.BotAPI
@@ -30,6 +45,18 @@ type sendReq struct {
     FileURL string `json:"file_url"`
     Mode    string `json:"mode"`
 }
+
+func isGmailAddress(email string) bool {
+    lower := strings.ToLower(email)
+    return strings.HasSuffix(lower, "@gmail.com") ||
+        strings.HasSuffix(lower, "@googlemail.com")
+}
+
+func isGmailBlockedExt(fileURL string) bool {
+    ext := strings.ToLower(path.Ext(path.Base(fileURL)))
+    return gmailBlockedExts[ext]
+}
+
 
 func New(api *tgbotapi.BotAPI, db *sql.DB, apiBase string, adminChatID int64) *Bot {
     return &Bot{
@@ -243,6 +270,21 @@ func (b *Bot) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
     default:
         b.send(chatID, "Неизвестный вариант доставки.")
         return
+    }
+
+    // предупреждение если email на Gmail и файл заблокированного типа
+    if mode == "email" || mode == "both" {
+        email, err := b.getEmailForTelegram(telegramID)
+        if err == nil && isGmailAddress(email) && isGmailBlockedExt(url) {
+            ext := strings.ToLower(path.Ext(path.Base(url)))
+            b.send(chatID, fmt.Sprintf(
+                "⚠️ Gmail блокирует файлы %s во вложениях.\nРекомендуем выбрать «В этот чат».",
+                ext,
+            ))
+            // не отправляем, очищаем ссылку и выходим из функции
+            delete(b.pendingLinks, telegramID)
+            return
+        }
     }
 
     apiKey, err := b.getAPIKeyForTelegram(telegramID)
@@ -484,6 +526,22 @@ func (b *Bot) registerTelegramUser(telegramID int64, username, email string) err
     )
     return err
 }
+
+func (b *Bot) getEmailForTelegram(telegramID int64) (string, error) {
+    var email string
+    err := b.db.QueryRow(
+        `SELECT u.email
+         FROM telegram_users t
+         JOIN users u ON u.id = t.user_id
+         WHERE t.telegram_id = $1`,
+        telegramID,
+    ).Scan(&email)
+    if err != nil {
+        return "", err
+    }
+    return email, nil
+}
+
 
 func (b *Bot) getAPIKeyForTelegram(telegramID int64) (string, error) {
     var userID int
