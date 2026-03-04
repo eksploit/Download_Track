@@ -49,19 +49,19 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, srcURL string) 
         return fmt.Errorf("smtp config incomplete")
     }
 
-    d.Logger.Printf("user_id=%d username=%s url=%s status=received\n", user.ID, user.Username, srcURL)
-    d.Logger.Printf("user_id=%d username=%s url=%s status=downloading\n", user.ID, user.Username, srcURL)
+    d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=received\n", user.ID, user.Username, srcURL, user.Mode)
+    d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=downloading\n", user.ID, user.Username, srcURL, user.Mode)
 
     getResp, err := d.HTTPClient.Get(srcURL)
     if err != nil {
         log.Printf("get request err: %v\n", err)
-        d.Logger.Printf("user_id=%d username=%s url=%s status=download_error stage=get error=%q\n", user.ID, user.Username, srcURL, err.Error())
+        d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=download_error stage=get error=%q\n", user.ID, user.Username, srcURL, user.Mode, err.Error())
         return fmt.Errorf("download failed: %w", err)
     }
     defer getResp.Body.Close()
 
     if getResp.StatusCode != http.StatusOK {
-        d.Logger.Printf("user_id=%d username=%s url=%s status=download_bad_status http_status=%d\n", user.ID, user.Username, srcURL, getResp.StatusCode)
+        d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=download_bad_status http_status=%d\n", user.ID, user.Username, srcURL, user.Mode, getResp.StatusCode)
         return fmt.Errorf("download bad status: %d", getResp.StatusCode)
     }
 
@@ -73,7 +73,7 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, srcURL string) 
     tmpFile, err := os.CreateTemp("", "download-*-" + urlFileName)
     if err != nil {
         log.Println("temp file create err:", err)
-        d.Logger.Printf("user_id=%d username=%s url=%s status=download_error stage=tempfile error=%q\n", user.ID, user.Username, srcURL, err.Error())
+        d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=download_error stage=tempfile error=%q\n", user.ID, user.Username, srcURL, user.Mode, err.Error())
         return fmt.Errorf("temp file create: %w", err)
     }
     defer func() {
@@ -84,13 +84,13 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, srcURL string) 
     written, err := io.Copy(tmpFile, getResp.Body)
     if err != nil {
         log.Println("io.Copy err:", err)
-        d.Logger.Printf("user_id=%d username=%s url=%s status=download_error stage=copy written=%d error=%q\n", user.ID, user.Username, srcURL, written, err.Error())
+        d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=download_error stage=copy written=%d error=%q\n", user.ID, user.Username, srcURL, user.Mode, written, err.Error())
         return fmt.Errorf("download failed: %w", err)
     }
 
     d.Logger.Printf(
-        "user_id=%d username=%s url=%s status=downloaded size=%d path=%s\n",
-        user.ID, user.Username, srcURL, written, tmpFile.Name(),
+        "user_id=%d username=%s url=%s mode=%s status=downloaded size=%d path=%s\n",
+        user.ID, user.Username, srcURL, user.Mode, written, tmpFile.Name(),
     )
 
     if user.Email == "" {
@@ -103,13 +103,13 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, srcURL string) 
 
     if err := d.sendEmail(user.Email, subject, body, tmpFile.Name()); err != nil {
         log.Println("sendEmail err:", err)
-        d.Logger.Printf("user_id=%d username=%s email=%s url=%s status=send_error stage=smtp error=%q\n",
-            user.ID, user.Username, user.Email, srcURL, err.Error())
+        d.Logger.Printf("user_id=%d username=%s email=%s url=%s mode=%s status=send_error stage=smtp error=%q\n",
+            user.ID, user.Username, user.Email, srcURL, user.Mode, err.Error())
         return fmt.Errorf("email send failed: %w", err)
     }
 
-    d.Logger.Printf("user_id=%d username=%s email=%s url=%s status=sent size=%d\n",
-        user.ID, user.Username, user.Email, srcURL, written)
+    d.Logger.Printf("user_id=%d username=%s email=%s url=%s mode=%s status=sent size=%d\n",
+        user.ID, user.Username, user.Email, srcURL, user.Mode, written)
 
     return nil
 }

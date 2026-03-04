@@ -21,20 +21,24 @@ type SMTPConfig struct {
 type Server struct {
     db       *sql.DB
     jobLog   *log.Logger
-    delivery delivery.Delivery
+    emailDelivery    delivery.Delivery
+    telegramDelivery delivery.Delivery
+    bothDelivery     delivery.Delivery
 }
 
 type sendRequest struct {
     APIKey  string `json:"api_key"`
     FileURL string `json:"file_url"`
+    Mode    string `json:"mode"` // "email", "telegram", "both"
 }
 
-// New создаёт Server с теми же полями, что раньше были в main.go.
-func New(db *sql.DB, jobLog *log.Logger, d delivery.Delivery) *Server {
+func New(db *sql.DB, jobLog *log.Logger, email delivery.Delivery, telegram delivery.Delivery, both delivery.Delivery) *Server {
     return &Server{
-        db:       db,
-        jobLog:   jobLog,
-        delivery: d,
+        db:              db,
+        jobLog:          jobLog,
+        emailDelivery:   email,
+        telegramDelivery: telegram,
+        bothDelivery:    both,
     }
 }
 
@@ -69,14 +73,15 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
     var userID int
     var username string
+    var telegramID int64
 
     err := s.db.QueryRow(
-        `SELECT users.id, telegram_users.username
+        `SELECT users.id, telegram_users.username, telegram_users.telegram_id
          FROM users
          JOIN telegram_users ON telegram_users.user_id = users.id
          WHERE users.api_key = $1`,
         req.APIKey,
-    ).Scan(&userID, &username)
+    ).Scan(&userID, &username, &telegramID)
     if err == sql.ErrNoRows {
         http.Error(w, "invalid api_key", http.StatusUnauthorized)
         return
@@ -95,14 +100,39 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    user := delivery.User{
-        ID:       userID,
-        Email:    emailAddr,
-        Username: username,
-        // TelegramID пока не нужен
+    if req.Mode == "" {
+        req.Mode = "email"
     }
 
-    if err := s.delivery.SendFile(r.Context(), user, req.FileURL); err != nil {
+    user := delivery.User{
+        ID:         userID,
+        Email:      emailAddr,
+        TelegramID: telegramID,
+        Username:   username,
+        Mode:       req.Mode,
+    }
+
+    var d delivery.Delivery
+
+    switch req.Mode {
+    case "email":
+        d = s.emailDelivery
+    case "telegram":
+        d = s.telegramDelivery
+    case "both":
+        d = s.bothDelivery
+    default:
+        http.Error(w, "invalid mode", http.StatusBadRequest)
+        return
+    }
+
+    if d == nil {
+        log.Println("delivery not configured for mode:", req.Mode)
+        http.Error(w, "delivery not configured", http.StatusBadGateway)
+        return
+    }
+
+    if err := d.SendFile(r.Context(), user, req.FileURL); err != nil {
         log.Println("delivery SendFile err:", err)
         http.Error(w, "delivery failed", http.StatusBadGateway)
         return
@@ -110,4 +140,5 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
     w.WriteHeader(http.StatusOK)
     _, _ = w.Write([]byte("ok"))
+
 }

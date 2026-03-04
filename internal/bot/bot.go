@@ -22,11 +22,13 @@ type Bot struct {
     db          *sql.DB
     apiBase     string
     adminChatID int64
+    pendingLinks map[int64]string // telegramID -> last URL awaiting mode
 }
 
 type sendReq struct {
     APIKey  string `json:"api_key"`
     FileURL string `json:"file_url"`
+    Mode    string `json:"mode"`
 }
 
 func New(api *tgbotapi.BotAPI, db *sql.DB, apiBase string, adminChatID int64) *Bot {
@@ -35,6 +37,7 @@ func New(api *tgbotapi.BotAPI, db *sql.DB, apiBase string, adminChatID int64) *B
         db:          db,
         apiBase:     apiBase,
         adminChatID: adminChatID,
+        pendingLinks: make(map[int64]string),
     }
 }
 
@@ -48,10 +51,15 @@ func (b *Bot) Run() {
     log.Println("bot started")
 
     for update := range updates {
-        if update.Message == nil {
+        if update.CallbackQuery != nil {
+            b.handleCallbackQuery(update.CallbackQuery)
             continue
         }
-        b.handleMessage(update.Message)
+
+        if update.Message != nil {
+            b.handleMessage(update.Message)
+            continue
+        }
     }
 }
 
@@ -170,20 +178,100 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
         return
     }
 
-    apiKey, err := b.getAPIKeyForTelegram(m.From.ID)
+    // проверка регистрации (как раньше)
+    registered, _, err := b.isTelegramRegistered(m.From.ID)
+    if err != nil {
+        log.Println("isTelegramRegistered err:", err)
+        b.send(chatID, "Внутренняя ошибка, попробуй позже.")
+        return
+    }
+    if !registered {
+        b.send(chatID, "Ты ещё не зарегистрирован. Сначала сделай /register email@example.com")
+        return
+    }
+
+    // сохраняем ссылку для выбора режима
+    b.pendingLinks[m.From.ID] = url
+
+    keyboard := tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("На email", "delivery_email"),
+            tgbotapi.NewInlineKeyboardButtonData("В этот чат", "delivery_telegram"),
+            tgbotapi.NewInlineKeyboardButtonData("И туда, и туда", "delivery_both"),
+        ),
+    )
+
+    msg := tgbotapi.NewMessage(chatID, "Куда отправить файл?")
+    msg.ReplyMarkup = keyboard
+
+    if _, err := b.api.Send(msg); err != nil {
+        log.Println("send inline keyboard err:", err)
+        b.send(chatID, "Ошибка отправки клавиатуры, попробуй позже.")
+        return
+    }
+}
+
+
+func (b *Bot) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
+    if cq == nil {
+        return
+    }
+
+    data := cq.Data
+    chatID := cq.Message.Chat.ID
+    telegramID := cq.From.ID
+
+    url, ok := b.pendingLinks[telegramID]
+    if !ok || url == "" {
+        // нет сохранённой ссылки
+        b.send(chatID, "Нет ожидающей ссылки для обработки. Отправь новую ссылку.")
+        return
+    }
+
+    mode := "email"
+    switch data {
+    case "delivery_email":
+        mode = "email"
+    case "delivery_telegram":
+        mode = "telegram"
+    case "delivery_both":
+        mode = "both"
+    default:
+        b.send(chatID, "Неизвестный вариант доставки.")
+        return
+    }
+
+    apiKey, err := b.getAPIKeyForTelegram(telegramID)
     if err != nil {
         log.Println("get api key err:", err)
         b.send(chatID, "Ты ещё не зарегистрирован. Сначала сделай /register email@example.com")
         return
     }
 
-    if err := b.callSend(apiKey, url); err != nil {
+        switch mode {
+        case "email":
+            b.send(chatID, "Файл будет отправлен на твой email.")
+        case "telegram":
+            b.send(chatID, "Файл будет отправлен в этот чат.")
+        case "both":
+            b.send(chatID, "Файл будет отправлен и на email, и в этот чат.")
+        }
+        
+    if err := b.callSendWithMode(apiKey, url, mode); err != nil {
         log.Println("process url err:", err)
         b.send(chatID, "Ошибка обработки ссылки: "+err.Error())
-    } else {
-        b.send(chatID, "Ссылка отправлена в HTTP-сервис, он обработает файл и отправит на твою почту.")
+    }
+
+    // очищаем pendingLinks
+    delete(b.pendingLinks, telegramID)
+
+    // ответ на callback, чтобы «часики» исчезли
+    answer := tgbotapi.NewCallback(cq.ID, "")
+    if _, err := b.api.Request(answer); err != nil {
+        log.Println("callback answer err:", err)
     }
 }
+
 
 func (b *Bot) listEmailChanges(chatID int64) error {
     if chatID != b.adminChatID {
@@ -408,10 +496,11 @@ func (b *Bot) getAPIKeyForTelegram(telegramID int64) (string, error) {
     return apiKey, nil
 }
 
-func (b *Bot) callSend(apiKey, fileURL string) error {
+func (b *Bot) callSendWithMode(apiKey, fileURL, mode string) error {
     body, _ := json.Marshal(sendReq{
         APIKey:  apiKey,
         FileURL: fileURL,
+        Mode:    mode,
     })
 
     resp, err := http.Post(b.apiBase+"/send", "application/json", bytes.NewReader(body))
@@ -424,6 +513,7 @@ func (b *Bot) callSend(apiKey, fileURL string) error {
     }
     return nil
 }
+
 
 func (b *Bot) isTelegramRegistered(telegramID int64) (bool, string, error) {
     var exists bool

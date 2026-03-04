@@ -15,8 +15,14 @@ type User struct {
     Email      string
     TelegramID int64
     Username   string
+    Mode       string
 }
 
 type Delivery interface {
     SendFile(ctx context.Context, user User, srcURL string) error
+}
+
+type MultiDelivery struct {
+    Email    Delivery
+    Telegram Delivery
 }

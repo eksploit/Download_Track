@@ -45,17 +45,39 @@ func main() {
         log.Println("warning: SMTP settings are incomplete, email sending will likely fail")
     }
 
-	smtpCfg := delivery.SMTPConfig{
-		Host:     smtpHost,
-		Port:     smtpPort,
-		User:     smtpUser,
-		Pass:     smtpPass,
-		FromAddr: fromAddr,
-	}
+    telegramToken := os.Getenv("TELEGRAM_TOKEN")
+    telegramAPIBase := os.Getenv("TELEGRAM_API_BASE")
+    if telegramAPIBase == "" {
+        telegramAPIBase = "http://telegram-bot-api:8081"
+    }
 
-	emailDelivery := delivery.NewEmailDelivery(db, jobLogger, smtpCfg)
+    smtpCfg := delivery.SMTPConfig{
+        Host:     smtpHost,
+        Port:     smtpPort,
+        User:     smtpUser,
+        Pass:     smtpPass,
+        FromAddr: fromAddr,
+    }
 
-    srv := httpserver.New(db, jobLogger, emailDelivery)
+    emailDelivery := delivery.NewEmailDelivery(db, jobLogger, smtpCfg)
+
+    var telegramDelivery delivery.Delivery
+    if telegramToken != "" {
+        telegramDelivery = delivery.NewTelegramDelivery(telegramToken, telegramAPIBase, jobLogger)
+    } else {
+        log.Println("warning: TELEGRAM_TOKEN is empty, telegram delivery will be disabled")
+    }
+
+    var bothDelivery delivery.Delivery
+    if emailDelivery != nil || telegramDelivery != nil {
+        bothDelivery = &delivery.MultiDelivery{
+            Email:    emailDelivery,
+            Telegram: telegramDelivery,
+        }
+    }
+
+    srv := httpserver.New(db, jobLogger, emailDelivery, telegramDelivery, bothDelivery)
+
 
     mux := http.NewServeMux()
     srv.Routes(mux)
