@@ -36,3 +36,4 @@ token.txt
 # Разное
 *.swp
 Download_Track.tar
+migrations.sql
