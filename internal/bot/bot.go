@@ -16,7 +16,7 @@ import (
 
     tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
-
+var ErrAlreadyRegistered = errors.New("already registered")
 type Bot struct {
     api         *tgbotapi.BotAPI
     db          *sql.DB
@@ -96,6 +96,10 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
         email := parts[1]
 
         if err := b.registerTelegramUser(m.From.ID, m.From.UserName, email); err != nil {
+            if errors.Is(err, ErrAlreadyRegistered) {
+            b.send(chatID, "Ты уже зарегистрирован. Просто пришли ссылку на файл.")
+            return
+            }
             log.Println("register err:", err)
             b.send(chatID, "Ошибка регистрации, попробуй позже.")
         } else {
@@ -256,7 +260,7 @@ func (b *Bot) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
         case "both":
             b.send(chatID, "Файл будет отправлен и на email, и в этот чат.")
         }
-        
+
     if err := b.callSendWithMode(apiKey, url, mode); err != nil {
         log.Println("process url err:", err)
         b.send(chatID, "Ошибка обработки ссылки: "+err.Error())
@@ -457,7 +461,7 @@ func (b *Bot) registerTelegramUser(telegramID int64, username, email string) err
         return err
     }
     if exists {
-        return nil
+        return ErrAlreadyRegistered
     }
 
     apiKey, err := generateAPIKey()
