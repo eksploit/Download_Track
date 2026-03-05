@@ -24,19 +24,18 @@
 
 ## Архитектура
 
-cmd/
-bot/ — точка входа Telegram‑бота
-http-service/ — точка входа HTTP‑сервиса
-internal/
-bot/ — логика бота (команды, inline‑клавиатура, CallbackQuery)
-httpserver/ — HTTP‑сервис (/health, /send)
-delivery/
-delivery.go — интерфейс Delivery и тип User
-email.go — EmailDelivery (SMTP)
-telegram.go — TelegramDelivery (локальный Bot API)
-multi.go — MultiDelivery (email + Telegram одновременно)
+Проект состоит из двух сервисов:
 
-text
+- `bot` — Telegram‑бот (точка входа в `cmd/bot`), который:
+  - обрабатывает команды (`/start`, `/register`, `/change_email`, `/help`, админские команды);
+  - принимает ссылки от пользователя и показывает inline‑клавиатуру для выбора режима доставки;
+  - делает HTTP‑запрос `POST /send` в HTTP‑сервис.
+- `http-service` — HTTP‑сервис (точка входа в `cmd/http-service`), который:
+  - по `api_key` находит пользователя в БД;
+  - скачивает файл по URL;
+  - доставляет его по email, в Telegram или одновременно (через реализацию `Delivery`).
+
+Подробнее устройство пакетов описано в `ARCHITECTURE.md`.
 
 ## Быстрый старт
 
@@ -45,15 +44,19 @@ text
 2. Запустить сервисы:
    ```bash
    docker compose up --build -d
-Написать боту в Telegram, выполнить /start, затем /register email@example.com и отправить ссылку на файл.
+   ```
 
-В ответ бот предложит выбрать способ доставки через inline‑клавиатуру:
+3. Написать боту в Telegram, выполнить `/start`, затем `/register email@example.com` и отправить ссылку на файл (можно с командой `/send <url>`, можно просто ссылкой).
 
-На email — файл придёт на зарегистрированный email.
+4. В ответ бот предложит выбрать способ доставки через inline‑клавиатуру:
 
-В этот чат — файл придёт прямо в Telegram‑чат.
+   - **На email** — файл придёт на зарегистрированный email.
+   - **В этот чат** — файл придёт прямо в Telegram‑чат.
+   - **И туда, и туда** — файл будет доставлен обоими способами.
 
-И туда, и туда — файл будет доставлен обоими способами.
+# Особенности доставки
+
+- При выборе доставки на email бот может предупредить, если у пользователя Gmail и расширение файла относится к блокируемым (например, `.exe`, `.bat`, `.js` и др.) — в этом случае отправка на почту не выполняется, и предлагается использовать доставку в чат.
 
 # Переменные окружения
 
@@ -107,6 +110,7 @@ text
 | `/start` | Приветствие и проверка регистрации |
 | `/register email@example.com` | Регистрация и генерация API‑ключа |
 | `/change_email new@example.com` | Запрос на смену email (требует подтверждения админа) |
+| `/send <ссылка>` | Отправить файл по ссылке (можно просто прислать ссылку без команды) |
 | `/help` | Список доступных команд |
 
 ---
@@ -119,11 +123,35 @@ text
 | `/reject_change <id>` | Отклонить заявку на смену email |
 | `/list_changes` | Показать все активные заявки |
 
+Эти команды доступны только в административном чате (`ADMIN_CHAT_ID`).
+
+---
+
+## HTTP API
+
+HTTP‑сервис предоставляет эндпоинт:
+
+- `POST /send` — запрос на доставку файла пользователю.
+
+Тело запроса (JSON):
+
+```json
+{
+  "api_key": "USER_API_KEY",
+  "file_url": "https://example.com/file.zip",
+  "mode": "email | telegram | both"
+}
+```
+
+- `api_key` — обязательный, API‑ключ пользователя из таблицы `users`;
+- `file_url` — обязательный, URL файла для скачивания;
+- `mode` — необязательный, по умолчанию `email`.
+
 ---
 
 # Логи
 
-HTTP‑сервис пишет структурированные логи в `/logs/send.log`.
+HTTP‑сервис пишет структурированные логи в `/logs/send.log` (внутри контейнера). На хосте этот путь обычно монтируется в локальный каталог (например, `./http-logs:/logs` в `docker-compose.yml`).
 
 # Примеры логов доставки
 
@@ -142,32 +170,92 @@ telegram delivery: user_id=1 telegram_id=123456 url=https://... mode=telegram st
 ```
 
 ## Схема работы 
-```text
-Пользователь
-    │ ссылка
-    ▼
-filemailer-bot
-    │ POST /send mode=telegram
-    ▼
-filemailer-http (TelegramDelivery)
-    │ GET https://site.com/file.exe
-    ▼
-Интернет
-    │ файл сохраняется в /tmp/tgdl-xxx-file.exe
-    ▼
-filemailer-http (TelegramDelivery)
-    │ POST /bot<TOKEN>/sendDocument
-    │ Content-Type: multipart/form-data
-    │ поле chat_id = 123
-    │ поле document = <бинарное содержимое файла>
-    ▼
-telegram-bot-api
-    │ ✅ принимает файл как бинарные данные
-    │ MTProto
-    ▼
-Серверы Telegram
-    │
-    ▼
-Пользователь получает файл в чат
 
+```text
+Пользователь в Telegram
+    │
+    │ 1. /register email@example.com
+    ▼
+Telegram‑бот (bot)
+    │
+    │ 1.1. Проверяет, есть ли telegram_id в базе
+    │ 1.2. Если нет — создаёт пользователя:
+    │      - INSERT INTO users (email, api_key)
+    │      - INSERT INTO telegram_users (telegram_id, username, user_id)
+    ▼
+
+Пользователь в Telegram
+    │
+    │ 2. Отправляет ссылку (или /send <url>)
+    ▼
+Telegram‑бот (bot)
+    │
+    │ 2.1. Извлекает первую URL из сообщения
+    │ 2.2. Проверяет регистрацию (telegram_users)
+    │ 2.3. Сохраняет ссылку в pendingLinks[telegram_id]
+    │ 2.4. Показывает inline‑клавиатуру:
+    │      - На email
+    │      - В этот чат
+    │      - И туда, и туда
+    ▼
+
+Пользователь в Telegram
+    │
+    │ 3. Нажимает кнопку (email / telegram / both)
+    ▼
+Telegram‑бот (bot)
+    │
+    │ 3.1. По telegram_id берёт ссылку из pendingLinks
+    │ 3.2. (для email/both) Проверяет:
+    │      - email пользователя
+    │      - если Gmail + «опасное» расширение (.exe, .bat, .js, ...),
+    │        предупреждает и НЕ шлёт запрос в HTTP‑сервис
+    │ 3.3. Получает api_key по telegram_id
+    │ 3.4. Делает HTTP‑запрос:
+    │      POST {API_BASE}/send
+    │      Body: {api_key, file_url, mode}
+    │ 3.5. Удаляет ссылку из pendingLinks
+    ▼
+
+HTTP‑сервис (http-service)
+    │
+    │ 4. Принимает POST /send
+    │ 4.1. Валидирует JSON (api_key, file_url, mode)
+    │ 4.2. По api_key находит пользователя:
+    │      - JOIN users + telegram_users
+    │ 4.3. Определяет режим доставки:
+    │      - email      → EmailDelivery
+    │      - telegram   → TelegramDelivery
+    │      - both       → MultiDelivery (email + telegram)
+    ▼
+
+Слой доставки (delivery)
+    │
+    ├─ EmailDelivery
+    │    │
+    │    │ 5.1. GET file_url → временный файл
+    │    │ 5.2. Формирует письмо с вложением
+    │    │ 5.3. Отправляет через SMTP (SMTP_HOST/PORT/USER/PASS/FROM)
+    │    │ 5.4. Пишет логи в /logs/send.log
+    │
+    ├─ TelegramDelivery
+    │    │
+    │    │ 5.1. GET file_url → временный файл
+    │    │ 5.2. POST {TELEGRAM_API_BASE}/bot<TOKEN>/sendDocument
+    │    │      - multipart/form-data
+    │    │      - chat_id = telegram_id
+    │    │      - document = бинарное содержимое файла
+    │    │ 5.3. Локальный telegram-bot-api отправляет файл в Telegram
+    │    │ 5.4. Пишет логи в /logs/send.log
+    │
+    └─ MultiDelivery
+         │
+         │ 5.x. Вызывает EmailDelivery и/или TelegramDelivery
+         │      и агрегирует ошибки (если обе упали)
+         ▼
+
+Пользователь
+    │
+    ├─ Получает письмо с вложением (email‑режим)
+    └─ Получает файл в Telegram‑чате (telegram‑режим)
 ```
