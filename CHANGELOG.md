@@ -1,6 +1,9 @@
 ### CHANGELOG
 
 ### Unreleased
+- **Рефакторинг бота**: пакет `internal/bot` разбит на файлы `bot.go` (жизненный цикл, `Run`), `handlers.go` (обработка сообщений и callback), `repository.go` (доступ к БД), `service.go` (бизнес-логика). Публичный API пакета не изменился.
+- **Автотесты**: добавлены unit-тесты для `extractFirstURL` ([internal/bot/handlers_test.go](internal/bot/handlers_test.go)), `MultiDelivery.SendFile` ([internal/delivery/multi_test.go](internal/delivery/multi_test.go)), обработчика `/health` ([internal/httpserver/server_test.go](internal/httpserver/server_test.go)). Запуск: `go test ./...`.
+- **Docker Compose**: удалён устаревший атрибут `version` из `docker-compose.yml`.
 - **Документация архитектуры**: добавлен подробный файл `ARCHITECTURE.md` с описанием сервисов, слоёв доставки и основных потоков данных.
 
 ### 0.5.0 – Фильтр Gmail и безопасность вложений

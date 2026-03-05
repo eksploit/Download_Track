@@ -24,11 +24,12 @@
   Точка входа HTTP‑сервиса доставки.
 
 - **`internal/bot`**  
-  Логика Telegram‑бота:
-  - обработка команд (`/start`, `/register`, `/change_email`, `/help`, `/send`, админские команды);
-  - работа с inline‑клавиатурой и `CallbackQuery`;
-  - проверка регистрации, создание пользователей и Telegram‑связок;
-  - формирование запроса в HTTP‑сервис (`POST /send`).
+  Логика Telegram‑бота (разбита по файлам):
+  - `bot.go` — структура `Bot`, конструктор `New`, метод `Run` (цикл обновлений);
+  - `handlers.go` — `handleMessage`, `handleCallbackQuery`, `extractFirstURL`, вспомогательные методы;
+  - `repository.go` — слой доступа к БД (`repo`), работа с таблицами `users`, `telegram_users`, `email_change_requests`;
+  - `service.go` — бизнес-операции поверх репозитория (регистрация, смена email, вызов HTTP `/send`, проверка Gmail-расширений).
+  Обработка команд (`/start`, `/register`, `/change_email`, `/help`, админские), inline‑клавиатура и запрос в HTTP‑сервис (`POST /send`).
 
 - **`internal/httpserver`**  
   HTTP‑слой:
@@ -65,26 +66,23 @@
 
 `internal/bot/bot.go` определяет:
 
-- `type Bot struct { api *tgbotapi.BotAPI; db *sql.DB; apiBase string; adminChatID int64; pendingLinks map[int64]string }`
+- `type Bot struct { api *tgbotapi.BotAPI; svc *service; adminChatID int64; pendingLinks map[int64]string }` — зависимости к БД и API вынесены в `service` и репозиторий внутри пакета.
 - Метод `Run()`:
   - открывает `GetUpdatesChan`;
   - в цикле обрабатывает:
-    - `CallbackQuery` через `handleCallbackQuery`;
-    - обычные сообщения через `handleMessage`.
+    - `CallbackQuery` через `handleCallbackQuery` (в `handlers.go`);
+    - обычные сообщения через `handleMessage` (в `handlers.go`).
 
 ### Обработка сообщений
 
 `handleMessage`:
 
 - Разбор текстовых команд:
-  - `/start` — проверка регистрации (`isTelegramRegistered`), приветствие;
-  - `/register email@example.com` — регистрация пользователя:
-    - проверка на уже зарегистрированного пользователя;
-    - генерация API‑ключа (`generateAPIKey`);
-    - запись в таблицы `users` и `telegram_users`;
+  - `/start` — проверка регистрации через `svc.IsTelegramRegistered`, приветствие;
+  - `/register email@example.com` — регистрация через `svc.RegisterUser` (проверка дубликата, генерация API‑ключа, запись в `users` и `telegram_users`);
   - `/help` — вывод справки по командам, в т.ч. админским;
-  - `/change_email new@example.com` — создание заявки на смену email (`requestEmailChange`) и уведомление админа;
-  - `/approve_change <id>`, `/reject_change <id>`, `/list_changes` — админские операции с таблицей `email_change_requests`.
+  - `/change_email new@example.com` — заявка на смену email через `svc.RequestEmailChange`, уведомление админа;
+  - `/approve_change <id>`, `/reject_change <id>`, `/list_changes` — админские операции через сервис и репозиторий (`email_change_requests`).
 
 - При отсутствии команды:
   - из сообщения извлекается первая URL‑ссылка (`extractFirstURL`);
@@ -105,9 +103,9 @@
 - Для email/оба режима:
   - получает email пользователя;
   - если email на Gmail и расширение файла из списка блокируемых (`.exe`, `.bat`, `.js` и т.п.), бот предупреждает и не отправляет запрос в HTTP‑сервис.
-- Получает `api_key` пользователя (`getAPIKeyForTelegram`).
+- Получает `api_key` пользователя через `svc.GetAPIKeyForTelegram`.
 - Отправляет пользователю текстовое подтверждение выбранного режима.
-- Вызывает HTTP‑сервис через `callSendWithMode`:
+- Вызывает HTTP‑сервис через `svc.CallSend`:
   - `POST {API_BASE}/send` с JSON `{ api_key, file_url, mode }`.
 - Очищает `pendingLinks` и отвечает на `CallbackQuery`, чтобы убрать «часики» в Telegram.
 
@@ -255,4 +253,16 @@ PostgreSQL используется минимум для следующих с�
 - внешний/внутренний SMTP‑сервер.
 
 Все настройки сервисов передаются через переменные окружения, подробно описанные в `README.md`.
+
+---
+
+## Тесты
+
+Unit-тесты расположены в тех же пакетах, что и код (`*_test.go`):
+
+- **`internal/bot/handlers_test.go`** — тесты для `extractFirstURL` (извлечение первой URL из сообщения по entities).
+- **`internal/delivery/multi_test.go`** — тесты для `MultiDelivery.SendFile` (оба канала nil, только email/telegram, ошибки и успех).
+- **`internal/httpserver/server_test.go`** — тест для обработчика `GET /health` (статус 200, тело `ok`).
+
+Запуск: `go test ./...` из корня проекта.
 
