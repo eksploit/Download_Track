@@ -2,12 +2,19 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: filemailer-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   telegram-bot-api:
     image: aiogram/telegram-bot-api:latest
@@ -27,8 +34,10 @@ services:
       context: .
       dockerfile: Dockerfile.http
     container_name: filemailer-http
+    restart: unless-stopped
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       DB_DSN: ${DB_DSN}
       SMTP_HOST: ${SMTP_HOST}
@@ -51,6 +60,7 @@ services:
       context: .
       dockerfile: Dockerfile.bot
     container_name: filemailer-bot
+    restart: unless-stopped
     depends_on:
       - http-service
       - telegram-bot-api
