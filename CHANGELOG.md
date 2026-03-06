@@ -1,6 +1,8 @@
 ### CHANGELOG
 
 ### Unreleased
+
+### 0.6.0 – YouTube и Instagram в чат
 - **Ограничение частоты загрузок с Instagram**: минимальный интервал между стартами (`INSTAGRAM_MIN_INTERVAL_SECONDS`) и пауза перед началом в yt-dlp (`YTDLP_SLEEP_INTERVAL_SECONDS`, `--sleep-interval`) для снижения риска rate limit и блокировки аккаунта.
 - **Instagram только через cookies**: yt-dlp не поддерживает вход по паролю для Instagram; восстановлена поддержка `YTDLP_COOKIES_PATH` (файл Netscape или JSON с автоконвертацией). Логин/пароль (`INSTAGRAM_USER`/`INSTAGRAM_PASS`) удалены.
 - **Сообщение при ошибке загрузки видео**: при неудачной загрузке видео (YouTube/Instagram) пользователю выводится пояснение о возможных ограничениях платформы вместо общего «Ошибка загрузки видео».
