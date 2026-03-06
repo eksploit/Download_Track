@@ -47,6 +47,7 @@
   - `Fetch(ctx, url)` возвращает путь к временному файлу и `cleanup` для удаления;
   - для обычных URL — HTTP GET во временный файл;
   - для YouTube/Instagram — yt-dlp, затем нормализация ffmpeg в MP4 для корректного воспроизведения в Telegram iOS.
+  - Опционально: путь к файлу cookies (`CookiesPath` в `DefaultFetcher`, задаётся через `YTDLP_COOKIES_PATH`). Если файл задан и существует, yt-dlp вызывается с `--cookies`. Поддерживаются форматы Netscape и JSON (экспорт из браузера); JSON автоматически конвертируется в Netscape перед вызовом yt-dlp (функция `cookiesPathForYtDlp`).
 
 - **`internal/delivery`**  
   Слой доставки файлов:
@@ -132,7 +133,8 @@
   - `DB_DSN` — строка подключения к PostgreSQL;
   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` — параметры SMTP;
   - `TELEGRAM_TOKEN` — токен Telegram‑бота для доставки;
-  - `TELEGRAM_API_BASE` — базовый URL локального Telegram Bot API (по умолчанию `http://telegram-bot-api:8081`).
+  - `TELEGRAM_API_BASE` — базовый URL локального Telegram Bot API (по умолчанию `http://telegram-bot-api:8081`);
+  - `YTDLP_COOKIES_PATH` — необязательный путь к файлу cookies для yt-dlp (например для Instagram).
 - Инициализирует:
   - подключение к БД;
   - файловый логгер в `/logs/send.log`;
@@ -248,7 +250,7 @@ PostgreSQL используется минимум для следующих с�
 2. Выбирается нужная реализация `Delivery` по `mode`.
 3. HTTP‑сервис скачивает URL через `internal/downloader`:
    - обычные ссылки — HTTP GET во временный файл;
-   - YouTube/Instagram — yt-dlp, затем нормализация ffmpeg в MP4 для корректного воспроизведения в Telegram iOS.
+   - YouTube/Instagram — yt-dlp (при заданном `YTDLP_COOKIES_PATH` — с `--cookies`, что снимает ограничения Instagram «login required»), затем нормализация ffmpeg в MP4 для корректного воспроизведения в Telegram iOS.
 4. Дальше реализации delivery используют **путь к локальному файлу**:
    - для email — формируется и отправляется письмо с вложением;
    - для Telegram — файл отправляется в чат через локальный Telegram Bot API (sendVideo/sendDocument).

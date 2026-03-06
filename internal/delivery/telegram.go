@@ -145,8 +145,7 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 	if err := writer.WriteField("chat_id", fmt.Sprintf("%d", user.TelegramID)); err != nil {
 		return fmt.Errorf("write chat_id field: %w", err)
 	}
-	// Для видео: width/height/duration обязательны для iOS — без них показывается статичный кадр при работающем звуке (Issue #301).
-	// supports_streaming — потоковое воспроизведение в приложении.
+	// Видео: параметры для воспроизведения в Telegram iOS (width/height/duration, supports_streaming, thumb).
 	if useVideo {
 		if err := writer.WriteField("supports_streaming", "true"); err != nil {
 			return fmt.Errorf("write supports_streaming field: %w", err)
@@ -165,10 +164,9 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 					}
 				}
 			}
-			// Явный thumbnail (JPEG ≤320px, <200KB) обязателен для локального Bot API — без него на iOS видео не воспроизводится (issue #127).
 			if thumbPath, cleanup, err := makeVideoThumbnail(d.Logger, filePath); err == nil {
 				defer cleanup()
-				if thumbData, err := os.ReadFile(thumbPath); err == nil && len(thumbData) > 0 && len(thumbData) < 200*1024 {
+				if thumbData, err := os.ReadFile(thumbPath); err == nil && len(thumbData) > 0 && len(thumbData) < maxThumbSize {
 					thumbPart, _ := writer.CreateFormFile("thumb", "thumb.jpg")
 					if thumbPart != nil {
 						_, _ = thumbPart.Write(thumbData)
@@ -219,7 +217,7 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 	return nil
 }
 
-// Расширения видео для отправки через sendVideo (просмотр в чате). Остальное — sendDocument.
+// Расширения видео: отправка через sendVideo для просмотра в чате, остальное — sendDocument.
 var videoExtensions = map[string]bool{
 	".mp4": true, ".m4v": true, ".mov": true, ".mkv": true, ".webm": true,
 	".avi": true, ".mpg": true, ".mpeg": true, ".3gp": true, ".ogv": true,
@@ -241,8 +239,7 @@ type ffprobeOutput struct {
 	} `json:"format"`
 }
 
-// getVideoMeta возвращает width, height и duration (секунды) видео по пути к файлу через ffprobe.
-// При ошибке или отсутствии ffprobe возвращает 0, 0, 0.
+// getVideoMeta возвращает width, height и duration (сек) через ffprobe; при ошибке — 0, 0, 0.
 func getVideoMeta(logger *log.Logger, path string) (width, height, duration int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -282,10 +279,9 @@ func getVideoMeta(logger *log.Logger, path string) (width, height, duration int)
 }
 
 const maxThumbSize = 200 * 1024 // Telegram: thumbnail < 200 kB
-const maxThumbDim = 320         // Telegram: width and height ≤ 320
+const maxThumbDim = 320         // Telegram: ширина и высота ≤ 320
 
-// makeVideoThumbnail создаёт JPEG-превью видео (первый кадр, макс. 320px, <200KB) через ffmpeg.
-// Возвращает путь к файлу и cleanup. Для локального Bot API явный thumb часто обязателен для воспроизведения на iOS (issue #127).
+// makeVideoThumbnail создаёт JPEG-превью (первый кадр, макс. maxThumbDim px, < maxThumbSize) через ffmpeg.
 func makeVideoThumbnail(logger *log.Logger, videoPath string) (thumbPath string, cleanup func(), err error) {
 	tmp, err := os.CreateTemp("", "tgthumb-*.jpg")
 	if err != nil {
@@ -295,10 +291,9 @@ func makeVideoThumbnail(logger *log.Logger, videoPath string) (thumbPath string,
 	thumbPath = tmp.Name()
 	cleanup = func() { _ = os.Remove(thumbPath) }
 
-	// Оба размера ≤320, сохраняем пропорции; q:v 5 — баланс качества и размера
 	args := []string{
 		"-y", "-i", videoPath,
-		"-vf", "scale='min(320,iw)':'min(320,ih)':force_original_aspect_ratio=decrease",
+		"-vf", fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease", maxThumbDim, maxThumbDim),
 		"-vframes", "1", "-q:v", "5",
 		thumbPath,
 	}
@@ -316,10 +311,9 @@ func makeVideoThumbnail(logger *log.Logger, videoPath string) (thumbPath string,
 		return "", nil, fmt.Errorf("thumbnail empty or missing")
 	}
 	if info.Size() > maxThumbSize {
-		// Перегнать с более низким качеством
 		_ = os.Remove(thumbPath)
 		args = []string{"-y", "-i", videoPath,
-			"-vf", "scale='min(320,iw)':'min(320,ih)':force_original_aspect_ratio=decrease",
+			"-vf", fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease", maxThumbDim, maxThumbDim),
 			"-vframes", "1", "-q:v", "10", thumbPath}
 		cmd = exec.CommandContext(context.Background(), "ffmpeg", args...)
 		if _, runErr := cmd.CombinedOutput(); runErr != nil {

@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,16 +26,19 @@ type Fetcher interface {
 type DefaultFetcher struct {
 	HTTPClient   *http.Client
 	YtDlpTimeout time.Duration
+	// CookiesPath — необязательный путь к файлу cookies (Netscape format) для yt-dlp (например для Instagram).
+	CookiesPath string
 }
 
-// NewDefaultFetcher создаёт Fetcher с таймаутом для yt-dlp (например 10 минут).
-func NewDefaultFetcher(ytDlpTimeout time.Duration) *DefaultFetcher {
+// NewDefaultFetcher создаёт Fetcher с таймаутом для yt-dlp (например 10 минут). cookiesPath может быть пустым.
+func NewDefaultFetcher(ytDlpTimeout time.Duration, cookiesPath string) *DefaultFetcher {
 	if ytDlpTimeout <= 0 {
 		ytDlpTimeout = 10 * time.Minute
 	}
 	return &DefaultFetcher{
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 		YtDlpTimeout: ytDlpTimeout,
+		CookiesPath:  cookiesPath,
 	}
 }
 
@@ -78,6 +83,69 @@ func (f *DefaultFetcher) fetchHTTP(ctx context.Context, url string) (string, fun
 	return path, cleanup, nil
 }
 
+// cookieJSON — структура одной записи в JSON-экспорте cookies (Chrome/EditThisCookie и т.п.).
+type cookieJSON struct {
+	Domain         string  `json:"domain"`
+	Path           string  `json:"path"`
+	Secure         bool    `json:"secure"`
+	ExpirationDate float64 `json:"expirationDate"`
+	Name           string  `json:"name"`
+	Value          string  `json:"value"`
+}
+
+// cookiesPathForYtDlp возвращает путь к файлу cookies в формате Netscape. Если исходный файл в JSON — конвертирует во временный файл в dir.
+func cookiesPathForYtDlp(cookiesPath, dir string) (string, error) {
+	data, err := os.ReadFile(cookiesPath)
+	if err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(string(data))
+	// Уже Netscape: первая строка с # или домен с табами.
+	if strings.HasPrefix(trimmed, "#") || (len(trimmed) > 0 && !strings.HasPrefix(trimmed, "[")) {
+		return cookiesPath, nil
+	}
+	var list []cookieJSON
+	if err := json.Unmarshal(data, &list); err != nil {
+		return "", fmt.Errorf("cookies json: %w", err)
+	}
+	outPath := filepath.Join(dir, "cookies_netscape.txt")
+	f, err := os.Create(outPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := f.WriteString("# Netscape HTTP Cookie File\n"); err != nil {
+		return "", err
+	}
+	for _, c := range list {
+		domain := c.Domain
+		if domain == "" {
+			domain = ".instagram.com"
+		}
+		includeSubdomains := "TRUE"
+		if !strings.HasPrefix(domain, ".") {
+			includeSubdomains = "FALSE"
+		}
+		pathVal := c.Path
+		if pathVal == "" {
+			pathVal = "/"
+		}
+		secure := "FALSE"
+		if c.Secure {
+			secure = "TRUE"
+		}
+		expiry := int64(c.ExpirationDate)
+		if expiry == 0 {
+			expiry = 2000000000 // далеко в будущем для сессионных
+		}
+		line := domain + "\t" + includeSubdomains + "\t" + pathVal + "\t" + secure + "\t" + strconv.FormatInt(expiry, 10) + "\t" + c.Name + "\t" + c.Value + "\n"
+		if _, err := f.WriteString(line); err != nil {
+			return "", err
+		}
+	}
+	return outPath, nil
+}
+
 func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, func(), error) {
 	dir, err := os.MkdirTemp("", "ytdlp-*")
 	if err != nil {
@@ -88,17 +156,25 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 	defer cancel()
 
 	sourceBase := filepath.Join(dir, "source")
-	// Скачиваем лучшее качество в любом формате. Дальше нормализуем ffmpeg'ом в MP4 под iOS Telegram,
-	// иначе возможна ситуация: звук есть, а видео «застыло» на первом кадре (при этом превью на ползунке меняется).
-	cmd := exec.CommandContext(runCtx, "yt-dlp",
-		"-o", sourceBase+".%(ext)s",
+	args := []string{
+		"-o", sourceBase + ".%(ext)s",
 		"--no-playlist",
 		"--no-part",
 		"--max-filesize", "1.9G",
 		"-f", "bestvideo+bestaudio/best",
 		"--merge-output-format", "mkv",
-		url,
-	)
+	}
+	if f.CookiesPath != "" {
+		if _, err := os.Stat(f.CookiesPath); err == nil {
+			cookiesFile := f.CookiesPath
+			if converted, err := cookiesPathForYtDlp(f.CookiesPath, dir); err == nil {
+				cookiesFile = converted
+			}
+			args = append(args, "--cookies", cookiesFile)
+		}
+	}
+	args = append(args, url)
+	cmd := exec.CommandContext(runCtx, "yt-dlp", args...)
 	cmd.Dir = dir
 
 	out, err := cmd.CombinedOutput()
@@ -107,7 +183,6 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 		return "", nil, fmt.Errorf("yt-dlp: %w (output: %s)", err, string(out))
 	}
 
-	// Ищем скачанный файл в dir (обычно source.<ext>).
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		os.RemoveAll(dir)
@@ -119,23 +194,18 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 		if e.IsDir() {
 			continue
 		}
-
 		name := e.Name()
-		// служебные файлы yt-dlp
 		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".json") {
 			continue
 		}
-		// исключаем очевидные не-видео
 		ext := strings.ToLower(path.Ext(name))
 		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".txt" {
 			continue
 		}
-
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		// предпочитаем source.* и берём самый большой файл (на случай нескольких артефактов)
 		if strings.HasPrefix(name, "source.") || foundPath == "" {
 			if info.Size() > foundSize {
 				foundPath = filepath.Join(dir, name)
@@ -159,11 +229,7 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 }
 
 func transcodeForTelegramIOS(ctx context.Context, inputPath, outputPath string) error {
-	// Нормализация для iOS Telegram:
-	// - H.264 baseline + yuv420p
-	// - AAC, 2 канала
-	// - фиксируем временные метки и FPS, чтобы избежать «застывшего» видео при работающем звуке
-	// - moov atom в начале для быстрого старта
+	// MP4: H.264 baseline, yuv420p, AAC, CFR 30 fps, genpts и faststart для воспроизведения в Telegram iOS.
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-y",
 		"-fflags", "+genpts",

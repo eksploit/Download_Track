@@ -77,7 +77,11 @@ func main() {
 		}
 	}
 
-	fetcher := downloader.NewDefaultFetcher(10 * time.Minute)
+	cookiesPath := os.Getenv("YTDLP_COOKIES_PATH")
+	fetcher := downloader.NewDefaultFetcher(10*time.Minute, cookiesPath)
+	if cookiesPath != "" {
+		log.Println("yt-dlp cookies: using file", cookiesPath)
+	}
 	srv := httpserver.New(db, jobLogger, fetcher, emailDelivery, telegramDelivery, bothDelivery)
 
 	mux := http.NewServeMux()

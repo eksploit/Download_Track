@@ -170,17 +170,16 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 	// Ветка «видео в чат»: YouTube/Instagram — без клавиатуры, сразу скачивание и доставка в чат
 	if urlutil.IsVideoPlatformURL(url) {
 		const msgStarted = "Скачивание началось, видео придёт в этот чат, как только будет готово."
-		const msgError = "Ошибка загрузки видео."
 		b.send(chatID, msgStarted)
 		apiKey, err := b.svc.GetAPIKeyForTelegram(m.From.ID)
 		if err != nil {
 			log.Println("get api key err:", err)
-			b.send(chatID, msgError)
+			b.send(chatID, "Ошибка загрузки видео.")
 			return
 		}
 		if err := b.svc.CallSend(apiKey, url, "telegram"); err != nil {
 			log.Println("CallSend video err:", err)
-			b.send(chatID, msgError)
+			b.send(chatID, "Не удалось загрузить видео. Instagram и YouTube иногда требуют вход или ограничивают загрузки — попробуйте позже или другую ссылку.")
 			return
 		}
 		return
