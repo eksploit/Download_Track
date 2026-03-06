@@ -42,6 +42,10 @@
 ## Быстрый старт
 
 1. Скопировать `.env.example` в `.env` и заполнить все параметры.
+   - В `DB_DSN` укажите те же логин, пароль и базу, что в `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` (хост — `postgres`, порт — `5432`).
+   - `ADMIN_CHAT_ID` — ваш Telegram ID (например, узнайте у [@userinfobot](https://t.me/userinfobot) или из логов бота при первом сообщении в админ-чат).
+   - `TELEGRAM_API_ID` и `TELEGRAM_API_HASH` — на [my.telegram.org](https://my.telegram.org) → «API development tools» → создать приложение → скопировать api_id и api_hash.
+   - Если не планируете скачивать видео с Instagram по ссылкам с «login required», в `docker-compose.yml` закомментируйте строку с томом `./cookies/instagram.txt` (иначе контейнер http-service не запустится без этого файла).
 
 2. Запустить сервисы:
    ```bash
@@ -89,7 +93,7 @@
 # Особенности доставки
 
 - **YouTube/Instagram**: для ссылок на видео (youtube.com, youtu.be, instagram.com) доставка выполняется только в Telegram‑чат. Обычные ссылки на файлы по-прежнему позволяют выбрать email, чат или оба варианта.
-- **Instagram: cookies**. yt-dlp для Instagram не поддерживает вход по паролю; при «login required» нужен файл cookies. Используйте отдельный технический аккаунт (**не личный** — возможны блокировки). В браузере войдите в аккаунт, экспортируйте cookies (Netscape или JSON — JSON конвертируется автоматически), сохраните в `cookies/instagram.txt`, задайте `YTDLP_COOKIES_PATH=/cookies/instagram.txt` в `.env`, раскомментируйте том в `docker-compose.yml` и перезапустите с `--force-recreate`. Папка `cookies/` в `.gitignore`.
+- **Instagram: cookies**. По умолчанию том с cookies в docker-compose закомментирован; если он не нужен, не создавайте папку `cookies/`. yt-dlp для Instagram не поддерживает вход по паролю; при «login required» нужен файл cookies. Используйте отдельный технический аккаунт (**не личный** — возможны блокировки). В браузере войдите в аккаунт, экспортируйте cookies (Netscape или JSON — JSON конвертируется автоматически), сохраните в `cookies/instagram.txt`, задайте `YTDLP_COOKIES_PATH=/cookies/instagram.txt` в `.env`, раскомментируйте том в `docker-compose.yml` и перезапустите с `--force-recreate`. Папка `cookies/` в `.gitignore`.
 - **Ограничение частоты запросов (rate limit)**: Instagram может временно блокировать загрузки при нескольких запросах подряд. Чтобы снизить риск, задайте `INSTAGRAM_MIN_INTERVAL_SECONDS` (минимальный интервал между стартами загрузок, например 60) и/или `YTDLP_SLEEP_INTERVAL_SECONDS` (пауза перед началом загрузки в yt-dlp). При ошибке «login required» или «rate-limit» подождите 5–10 минут и повторите.
 - При выборе доставки на email бот может предупредить, если у пользователя Gmail и расширение файла относится к блокируемым (например, `.exe`, `.bat`, `.js` и др.) — в этом случае отправка на почту не выполняется, и предлагается использовать доставку в чат.
 
@@ -123,6 +127,8 @@
 | `POSTGRES_USER` | да | Пользователь PostgreSQL |
 | `POSTGRES_PASSWORD` | да | Пароль PostgreSQL |
 | `POSTGRES_DB` | да | Имя базы данных PostgreSQL |
+
+Значения в `DB_DSN` (логин, пароль, имя базы) должны совпадать с `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`; хост в DSN — `postgres`, порт — `5432`.
 
 ---
 
