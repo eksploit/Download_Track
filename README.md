@@ -6,6 +6,7 @@
 
 - Регистрация пользователя по команде `/register email@example.com`, генерация API‑ключа.
 - Приём ссылок на файлы: бот предлагает inline‑клавиатуру с выбором способа доставки.
+- **Ссылки на видео YouTube и Instagram**: при отправке ссылки на youtube.com, youtu.be или instagram.com бот сразу сообщает «Скачивание началось…» и присылает видео в этот чат (без выбора способа доставки). Скачивание выполняется через yt-dlp в http-service.
 - Три режима доставки:
   - **На email** — файл скачивается и отправляется как вложение на зарегистрированный email (SMTP).
   - **В этот чат** — файл отправляется напрямую в Telegram‑чат через локальный Telegram Bot API (поддержка файлов до 2 ГБ).
@@ -18,6 +19,7 @@
 
 - Go, `github.com/go-telegram-bot-api/telegram-bot-api/v5` для бота.
 - Локальный [Telegram Bot API](https://github.com/tdlib/telegram-bot-api) (`tdlib/telegram-bot-api`) для доставки файлов в Telegram напрямую.
+- `yt-dlp` + `ffmpeg` внутри `http-service` для скачивания/нормализации видео (YouTube/Instagram) перед отправкой в чат.
 - PostgreSQL для хранения пользователей и заявок.
 - Docker Compose для запуска `bot`, `http-service`, `postgres` и `telegram-bot-api`.
 - SMTP‑сервер для исходящей почты.
@@ -75,6 +77,7 @@
    - `/register ваш_email@example.com` — ответ «Готово! Теперь просто пришли ссылку на файл».
    - Отправить любую ссылку на файл (например, на маленькое изображение) → появится клавиатура «На email / В этот чат / И туда, и туда».
    - Выбрать «В этот чат» — файл должен прийти в чат (или сообщение об ошибке, если URL недоступен).
+   - Отправить ссылку на YouTube или Instagram → сообщение «Скачивание началось…», затем видео придёт в чат (клавиатура не показывается).
 
 4. **Сборка и автотесты**
    ```bash
@@ -85,6 +88,7 @@
 
 # Особенности доставки
 
+- **YouTube/Instagram**: для ссылок на видео (youtube.com, youtu.be, instagram.com) доставка выполняется только в Telegram‑чат. Обычные ссылки на файлы по-прежнему позволяют выбрать email, чат или оба варианта.
 - При выборе доставки на email бот может предупредить, если у пользователя Gmail и расширение файла относится к блокируемым (например, `.exe`, `.bat`, `.js` и др.) — в этом случае отправка на почту не выполняется, и предлагается использовать доставку в чат.
 
 # Переменные окружения
@@ -256,24 +260,25 @@ HTTP‑сервис (http-service)
     │      - email      → EmailDelivery
     │      - telegram   → TelegramDelivery
     │      - both       → MultiDelivery (email + telegram)
+    │ 4.4. downloader.Fetch(file_url) → локальный временный файл (HTTP или yt-dlp + ffmpeg для YouTube/Instagram)
     ▼
 
 Слой доставки (delivery)
     │
     ├─ EmailDelivery
     │    │
-    │    │ 5.1. GET file_url → временный файл
+    │    │ 5.1. Читает локальный файл (путь от downloader)
     │    │ 5.2. Формирует письмо с вложением
     │    │ 5.3. Отправляет через SMTP (SMTP_HOST/PORT/USER/PASS/FROM)
     │    │ 5.4. Пишет логи в /logs/send.log
     │
     ├─ TelegramDelivery
     │    │
-    │    │ 5.1. GET file_url → временный файл
-    │    │ 5.2. POST {TELEGRAM_API_BASE}/bot<TOKEN>/sendDocument
+    │    │ 5.1. Читает локальный файл (путь от downloader)
+    │    │ 5.2. POST {TELEGRAM_API_BASE}/bot<TOKEN>/(sendVideo|sendDocument)
     │    │      - multipart/form-data
     │    │      - chat_id = telegram_id
-    │    │      - document = бинарное содержимое файла
+    │    │      - video|document = бинарное содержимое файла
     │    │ 5.3. Локальный telegram-bot-api отправляет файл в Telegram
     │    │ 5.4. Пишет логи в /logs/send.log
     │

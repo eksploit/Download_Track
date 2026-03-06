@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-
 // PendingEmailChangeRow — одна строка из списка заявок на смену email со статусом pending.
 type PendingEmailChangeRow struct {
 	ID        int64

@@ -13,11 +13,11 @@ COPY . .
 # собираем бинарь HTTP-сервиса
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o http-service ./cmd/http-service
 
-# ---------- run stage ----------
-FROM alpine:3.19
+# ---------- run stage: Alpine edge для yt-dlp и yt-dlp-ejs-rt-deno (YouTube/Instagram) ----------
+FROM alpine:edge
 
 WORKDIR /app
-RUN apk --no-cache add ca-certificates
+RUN apk add --no-cache ca-certificates ffmpeg yt-dlp yt-dlp-ejs-rt-deno
 
 COPY --from=builder /app/http-service .
 

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"download_track/internal/urlutil"
 )
 
 func (b *Bot) handleMessage(m *tgbotapi.Message) {
@@ -162,6 +164,25 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 	}
 	if !registered {
 		b.send(chatID, "Ты ещё не зарегистрирован. Сначала сделай /register email@example.com")
+		return
+	}
+
+	// Ветка «видео в чат»: YouTube/Instagram — без клавиатуры, сразу скачивание и доставка в чат
+	if urlutil.IsVideoPlatformURL(url) {
+		const msgStarted = "Скачивание началось, видео придёт в этот чат, как только будет готово."
+		const msgError = "Ошибка загрузки видео."
+		b.send(chatID, msgStarted)
+		apiKey, err := b.svc.GetAPIKeyForTelegram(m.From.ID)
+		if err != nil {
+			log.Println("get api key err:", err)
+			b.send(chatID, msgError)
+			return
+		}
+		if err := b.svc.CallSend(apiKey, url, "telegram"); err != nil {
+			log.Println("CallSend video err:", err)
+			b.send(chatID, msgError)
+			return
+		}
 		return
 	}
 

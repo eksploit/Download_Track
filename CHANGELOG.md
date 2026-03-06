@@ -1,6 +1,7 @@
 ### CHANGELOG
 
 ### Unreleased
+- **YouTube и Instagram в чат**: для ссылок на видео (youtube.com, youtu.be, instagram.com) бот сразу запускает скачивание через yt-dlp и доставляет видео в Telegram‑чат без выбора способа доставки. В http-service добавлен слой `internal/downloader` (HTTP GET или yt-dlp), после yt-dlp выполняется нормализация через ffmpeg (MP4/H.264/AAC) для корректного воспроизведения в Telegram iOS. Отправка в Telegram для видео выполняется через `sendVideo` (с `supports_streaming`, `width/height/duration` через ffprobe и `thumb` через ffmpeg). Образ http-service собирается с ffmpeg, yt-dlp и yt-dlp-ejs-rt-deno (Alpine edge). Обычные ссылки по-прежнему обрабатываются с клавиатурой выбора режима.
 - **Рефакторинг бота**: пакет `internal/bot` разбит на файлы `bot.go` (жизненный цикл, `Run`), `handlers.go` (обработка сообщений и callback), `repository.go` (доступ к БД), `service.go` (бизнес-логика). Публичный API пакета не изменился.
 - **Автотесты**: добавлены unit-тесты для `extractFirstURL` ([internal/bot/handlers_test.go](internal/bot/handlers_test.go)), `MultiDelivery.SendFile` ([internal/delivery/multi_test.go](internal/delivery/multi_test.go)), обработчика `/health` ([internal/httpserver/server_test.go](internal/httpserver/server_test.go)). Запуск: `go test ./...`.
 - **Docker Compose**: удалён устаревший атрибут `version` из `docker-compose.yml`.

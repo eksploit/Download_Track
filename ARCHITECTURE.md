@@ -23,6 +23,10 @@
 - **`cmd/http-service`**  
   Точка входа HTTP‑сервиса доставки.
 
+- **`internal/urlutil`**  
+  Утилиты для работы с URL:
+  - `IsVideoPlatformURL` — определяет ссылки YouTube/Instagram, которые нужно обрабатывать через yt-dlp.
+
 - **`internal/bot`**  
   Логика Telegram‑бота (разбита по файлам):
   - `bot.go` — структура `Bot`, конструктор `New`, метод `Run` (цикл обновлений);
@@ -37,6 +41,12 @@
   - валидация входящего запроса;
   - поиск пользователя по `api_key` в БД;
   - выбор реализации доставки по полю `mode`.
+
+- **`internal/downloader`**  
+  Слой скачивания по URL:
+  - `Fetch(ctx, url)` возвращает путь к временному файлу и `cleanup` для удаления;
+  - для обычных URL — HTTP GET во временный файл;
+  - для YouTube/Instagram — yt-dlp, затем нормализация ffmpeg в MP4 для корректного воспроизведения в Telegram iOS.
 
 - **`internal/delivery`**  
   Слой доставки файлов:
@@ -87,8 +97,11 @@
 - При отсутствии команды:
   - из сообщения извлекается первая URL‑ссылка (`extractFirstURL`);
   - проверяется, что пользователь зарегистрирован;
-  - ссылка сохраняется в `pendingLinks[telegramID]`;
-  - пользователю отправляется inline‑клавиатура с вариантами:
+  - если ссылка относится к YouTube/Instagram (`urlutil.IsVideoPlatformURL`), бот:
+    - сообщает «Скачивание началось…»;
+    - вызывает `POST /send` с `mode=telegram` без клавиатуры;
+    - видео приходит в этот чат после скачивания;
+  - иначе ссылка сохраняется в `pendingLinks[telegramID]` и пользователю отправляется inline‑клавиатура:
     - «На email» (`delivery_email`);
     - «В этот чат» (`delivery_telegram`);
     - «И туда, и туда» (`delivery_both`).
@@ -134,6 +147,7 @@
 
 - `db *sql.DB` — доступ к БД;
 - `jobLog *log.Logger` — логгер доставки;
+- `fetcher downloader.Fetcher` — слой скачивания (обычный HTTP или yt-dlp);
 - `emailDelivery`, `telegramDelivery`, `bothDelivery` — реализации `Delivery`.
 
 Роуты:
@@ -146,7 +160,9 @@
     - `email` → `emailDelivery`;
     - `telegram` → `telegramDelivery`;
     - `both` → `bothDelivery`.
-  - формирует `delivery.User` и вызывает `SendFile(ctx, user, fileURL)`.
+  - скачивает URL через `fetcher.Fetch(ctx, file_url)` → `localPath`, `cleanup`;
+  - `defer cleanup()` удаляет временный файл после доставки;
+  - формирует `delivery.User` и вызывает `SendFile(ctx, user, localPath)`.
   - при ошибках отдаёт соответствующие HTTP‑коды (`401`, `400`, `500`, `502`).
 
 ---
@@ -156,13 +172,12 @@
 ### Общие типы
 
 - `type User struct { ID int; Email string; TelegramID int64; Username string; Mode string }`
-- `type Delivery interface { SendFile(ctx context.Context, user User, srcURL string) error }`
+- `type Delivery interface { SendFile(ctx context.Context, user User, src string) error }` — `src` это путь к локальному файлу после `downloader.Fetch`.
 
 ### Email‑доставка (`EmailDelivery`, `email.go`)
 
 - Отвечает за:
-  - скачивание файла по `srcURL` с помощью `http.Client`;
-  - сохранение во временный файл;
+  - чтение вложения из локального файла по пути `src`;
   - построение MIME‑письма с вложением (через `github.com/scorredoira/email`);
   - отправку письма через SMTP (с поддержкой `STARTTLS`).
 - Логирует статусы:
@@ -171,10 +186,9 @@
 ### Telegram‑доставка (`TelegramDelivery`, `telegram.go`)
 
 - Отвечает за:
-  - скачивание файла по `srcURL` во временный файл;
-  - отправку этого файла в Telegram‑чат пользователя:
-    - `POST {TELEGRAM_API_BASE}/bot{TOKEN}/sendDocument` с `multipart/form-data`;
-    - поля: `chat_id`, `document` (бинарное содержимое файла).
+  - отправку локального файла в Telegram‑чат пользователя через локальный Telegram Bot API:
+    - для видео — `sendVideo` (встроенный плеер в чате), иначе `sendDocument`;
+    - дополнительно выставляются `supports_streaming`, `width/height/duration` (через ffprobe) и `thumb` (JPEG‑превью через ffmpeg) для лучшей совместимости iOS.
 - Использует локальный Telegram Bot API контейнер, который уже инкапсулирует MTProto‑взаимодействие с Telegram.
 - Логирует статусы `request`, `download_error`, `downloaded`, `api_error`, `sent`.
 
@@ -232,12 +246,12 @@ PostgreSQL используется минимум для следующих с�
 
 1. HTTP‑сервис по `api_key` находит пользователя и его Telegram‑данные.
 2. Выбирается нужная реализация `Delivery` по `mode`.
-3. Реализация скачивает файл по указанному URL:
-   - в `/tmp/...` или аналогичную директорию;
-   - логирует успешное скачивание или ошибку.
-4. Дальше:
+3. HTTP‑сервис скачивает URL через `internal/downloader`:
+   - обычные ссылки — HTTP GET во временный файл;
+   - YouTube/Instagram — yt-dlp, затем нормализация ffmpeg в MP4 для корректного воспроизведения в Telegram iOS.
+4. Дальше реализации delivery используют **путь к локальному файлу**:
    - для email — формируется и отправляется письмо с вложением;
-   - для Telegram — файл отправляется в чат через локальный Telegram Bot API.
+   - для Telegram — файл отправляется в чат через локальный Telegram Bot API (sendVideo/sendDocument).
 5. Результат (успех/ошибка) логируется в `/logs/send.log`.
 
 ---

@@ -10,8 +10,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 )
 
 type TelegramDelivery struct {
@@ -39,7 +43,7 @@ func NewTelegramDelivery(token, baseURL string, logger *log.Logger) *TelegramDel
 	}
 }
 
-func (d *TelegramDelivery) SendFile(ctx context.Context, user User, srcURL string) error {
+func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) error {
 	if user.TelegramID == 0 {
 		return fmt.Errorf("telegram id is empty for user_id=%d", user.ID)
 	}
@@ -48,67 +52,137 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, srcURL strin
 	}
 
 	d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=request\n",
-		user.ID, user.TelegramID, srcURL, user.Mode)
+		user.ID, user.TelegramID, src, user.Mode)
 
-	// 1. Скачиваем файл во временный файл
-	getResp, err := d.Client.Get(srcURL)
-	if err != nil {
-		d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=download_error error=%q\n",
-			user.ID, user.TelegramID, srcURL, user.Mode, err.Error())
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer getResp.Body.Close()
+	var file *os.File
+	var size int64
+	var fileName string
+	var filePath string // путь к файлу на диске (для ffprobe при отправке видео)
 
-	if getResp.StatusCode != http.StatusOK {
-		d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=download_bad_status http_status=%d\n",
-			user.ID, user.TelegramID, srcURL, user.Mode, getResp.StatusCode)
-		return fmt.Errorf("download bad status: %d", getResp.StatusCode)
-	}
+	if isURL(src) {
+		// src — URL: скачиваем во временный файл
+		getResp, err := d.Client.Get(src)
+		if err != nil {
+			d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=download_error error=%q\n",
+				user.ID, user.TelegramID, src, user.Mode, err.Error())
+			return fmt.Errorf("download failed: %w", err)
+		}
+		defer getResp.Body.Close()
 
-	urlFileName := path.Base(srcURL)
-	if urlFileName == "." || urlFileName == "/" || urlFileName == "" {
-		urlFileName = "downloaded-file"
-	}
+		if getResp.StatusCode != http.StatusOK {
+			d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=download_bad_status http_status=%d\n",
+				user.ID, user.TelegramID, src, user.Mode, getResp.StatusCode)
+			return fmt.Errorf("download bad status: %d", getResp.StatusCode)
+		}
 
-	tmpFile, err := os.CreateTemp("", "tgdl-*-"+urlFileName)
-	if err != nil {
-		return fmt.Errorf("temp file create: %w", err)
-	}
-	defer func() {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
-	}()
+		urlFileName := path.Base(src)
+		if urlFileName == "." || urlFileName == "/" || urlFileName == "" {
+			urlFileName = "downloaded-file"
+		}
 
-	written, err := io.Copy(tmpFile, getResp.Body)
-	if err != nil {
-		return fmt.Errorf("download copy: %w", err)
+		tmpFile, err := os.CreateTemp("", "tgdl-*-"+urlFileName)
+		if err != nil {
+			return fmt.Errorf("temp file create: %w", err)
+		}
+		defer func() {
+			tmpFile.Close()
+			os.Remove(tmpFile.Name())
+		}()
+
+		written, err := io.Copy(tmpFile, getResp.Body)
+		if err != nil {
+			return fmt.Errorf("download copy: %w", err)
+		}
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek temp file: %w", err)
+		}
+
+		file = tmpFile
+		size = written
+		fileName = filepath.Base(tmpFile.Name())
+		filePath = tmpFile.Name()
+	} else {
+		// src — путь к локальному файлу: открываем и отправляем
+		filePath = src
+		f, err := os.Open(src)
+		if err != nil {
+			d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d path=%s mode=%s status=open_error error=%q\n",
+				user.ID, user.TelegramID, src, user.Mode, err.Error())
+			return fmt.Errorf("open file: %w", err)
+		}
+		defer f.Close()
+
+		info, err := f.Stat()
+		if err != nil {
+			return fmt.Errorf("stat file: %w", err)
+		}
+		size = info.Size()
+		fileName = filepath.Base(src)
+		if fileName == "." || fileName == "" {
+			fileName = "file"
+		}
+		file = f
 	}
 
 	d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=downloaded size=%d\n",
-		user.ID, user.TelegramID, srcURL, user.Mode, written)
+		user.ID, user.TelegramID, src, user.Mode, size)
 
-	// 2. Переходим в начало файла
-	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek temp file: %w", err)
+	// Для видео используем sendVideo — воспроизведение в чате; для остальных — sendDocument
+	useVideo := isVideoExtension(fileName)
+	var endpoint, formField string
+	if useVideo {
+		endpoint = "sendVideo"
+		formField = "video"
+	} else {
+		endpoint = "sendDocument"
+		formField = "document"
 	}
-
-	// 3. Отправляем через multipart/form-data
-	apiURL := fmt.Sprintf("%s/bot%s/sendDocument", d.BaseURL, d.Token)
+	apiURL := fmt.Sprintf("%s/bot%s/%s", d.BaseURL, d.Token, endpoint)
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	// chat_id
 	if err := writer.WriteField("chat_id", fmt.Sprintf("%d", user.TelegramID)); err != nil {
 		return fmt.Errorf("write chat_id field: %w", err)
 	}
+	// Для видео: width/height/duration обязательны для iOS — без них показывается статичный кадр при работающем звуке (Issue #301).
+	// supports_streaming — потоковое воспроизведение в приложении.
+	if useVideo {
+		if err := writer.WriteField("supports_streaming", "true"); err != nil {
+			return fmt.Errorf("write supports_streaming field: %w", err)
+		}
+		if filePath != "" {
+			if w, h, dur := getVideoMeta(d.Logger, filePath); w > 0 && h > 0 {
+				if err := writer.WriteField("width", strconv.Itoa(w)); err != nil {
+					return fmt.Errorf("write width field: %w", err)
+				}
+				if err := writer.WriteField("height", strconv.Itoa(h)); err != nil {
+					return fmt.Errorf("write height field: %w", err)
+				}
+				if dur > 0 {
+					if err := writer.WriteField("duration", strconv.Itoa(dur)); err != nil {
+						return fmt.Errorf("write duration field: %w", err)
+					}
+				}
+			}
+			// Явный thumbnail (JPEG ≤320px, <200KB) обязателен для локального Bot API — без него на iOS видео не воспроизводится (issue #127).
+			if thumbPath, cleanup, err := makeVideoThumbnail(d.Logger, filePath); err == nil {
+				defer cleanup()
+				if thumbData, err := os.ReadFile(thumbPath); err == nil && len(thumbData) > 0 && len(thumbData) < 200*1024 {
+					thumbPart, _ := writer.CreateFormFile("thumb", "thumb.jpg")
+					if thumbPart != nil {
+						_, _ = thumbPart.Write(thumbData)
+					}
+				}
+			}
+		}
+	}
 
-	// document
-	part, err := writer.CreateFormFile("document", filepath.Base(tmpFile.Name()))
+	part, err := writer.CreateFormFile(formField, fileName)
 	if err != nil {
 		return fmt.Errorf("create form file: %w", err)
 	}
-	if _, err := io.Copy(part, tmpFile); err != nil {
+	if _, err := io.Copy(part, file); err != nil {
 		return fmt.Errorf("copy to multipart: %w", err)
 	}
 
@@ -123,8 +197,8 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, srcURL strin
 	resp, err := d.Client.Do(httpReq)
 	if err != nil {
 		d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=error error=%q\n",
-			user.ID, user.TelegramID, srcURL, user.Mode, err.Error())
-		return fmt.Errorf("telegram sendDocument request failed: %w", err)
+			user.ID, user.TelegramID, src, user.Mode, err.Error())
+		return fmt.Errorf("telegram %s request failed: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
@@ -135,12 +209,122 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, srcURL strin
 
 	if !apiResp.Ok {
 		d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=api_error description=%q\n",
-			user.ID, user.TelegramID, srcURL, user.Mode, apiResp.Description)
+			user.ID, user.TelegramID, src, user.Mode, apiResp.Description)
 		return fmt.Errorf("telegram api error: %s", apiResp.Description)
 	}
 
 	d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=sent size=%d\n",
-		user.ID, user.TelegramID, srcURL, user.Mode, written)
+		user.ID, user.TelegramID, src, user.Mode, size)
 
 	return nil
+}
+
+// Расширения видео для отправки через sendVideo (просмотр в чате). Остальное — sendDocument.
+var videoExtensions = map[string]bool{
+	".mp4": true, ".m4v": true, ".mov": true, ".mkv": true, ".webm": true,
+	".avi": true, ".mpg": true, ".mpeg": true, ".3gp": true, ".ogv": true,
+}
+
+func isVideoExtension(fileName string) bool {
+	ext := strings.ToLower(path.Ext(fileName))
+	return videoExtensions[ext]
+}
+
+// ffprobe JSON для извлечения width, height, duration.
+type ffprobeOutput struct {
+	Streams []struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"streams"`
+	Format struct {
+		Duration string `json:"duration"`
+	} `json:"format"`
+}
+
+// getVideoMeta возвращает width, height и duration (секунды) видео по пути к файлу через ffprobe.
+// При ошибке или отсутствии ffprobe возвращает 0, 0, 0.
+func getVideoMeta(logger *log.Logger, path string) (width, height, duration int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=width,height",
+		"-show_entries", "format=duration",
+		"-of", "json",
+		path,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if logger != nil {
+			logger.Printf("ffprobe %s: %v (output: %s)", path, err, string(out))
+		}
+		return 0, 0, 0
+	}
+	var probe ffprobeOutput
+	if err := json.Unmarshal(out, &probe); err != nil {
+		return 0, 0, 0
+	}
+	if len(probe.Streams) == 0 {
+		return 0, 0, 0
+	}
+	width = probe.Streams[0].Width
+	height = probe.Streams[0].Height
+	if probe.Format.Duration != "" {
+		if f, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && f > 0 {
+			duration = int(f)
+			if duration < 1 && f > 0 {
+				duration = 1
+			}
+		}
+	}
+	return width, height, duration
+}
+
+const maxThumbSize = 200 * 1024 // Telegram: thumbnail < 200 kB
+const maxThumbDim = 320         // Telegram: width and height ≤ 320
+
+// makeVideoThumbnail создаёт JPEG-превью видео (первый кадр, макс. 320px, <200KB) через ffmpeg.
+// Возвращает путь к файлу и cleanup. Для локального Bot API явный thumb часто обязателен для воспроизведения на iOS (issue #127).
+func makeVideoThumbnail(logger *log.Logger, videoPath string) (thumbPath string, cleanup func(), err error) {
+	tmp, err := os.CreateTemp("", "tgthumb-*.jpg")
+	if err != nil {
+		return "", nil, err
+	}
+	tmp.Close()
+	thumbPath = tmp.Name()
+	cleanup = func() { _ = os.Remove(thumbPath) }
+
+	// Оба размера ≤320, сохраняем пропорции; q:v 5 — баланс качества и размера
+	args := []string{
+		"-y", "-i", videoPath,
+		"-vf", "scale='min(320,iw)':'min(320,ih)':force_original_aspect_ratio=decrease",
+		"-vframes", "1", "-q:v", "5",
+		thumbPath,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	if out, runErr := cmd.CombinedOutput(); runErr != nil {
+		if logger != nil {
+			logger.Printf("ffmpeg thumbnail %s: %v (%s)", videoPath, runErr, string(out))
+		}
+		return "", nil, runErr
+	}
+	info, err := os.Stat(thumbPath)
+	if err != nil || info.Size() == 0 {
+		return "", nil, fmt.Errorf("thumbnail empty or missing")
+	}
+	if info.Size() > maxThumbSize {
+		// Перегнать с более низким качеством
+		_ = os.Remove(thumbPath)
+		args = []string{"-y", "-i", videoPath,
+			"-vf", "scale='min(320,iw)':'min(320,ih)':force_original_aspect_ratio=decrease",
+			"-vframes", "1", "-q:v", "10", thumbPath}
+		cmd = exec.CommandContext(context.Background(), "ffmpeg", args...)
+		if _, runErr := cmd.CombinedOutput(); runErr != nil {
+			return "", nil, runErr
+		}
+	}
+	return thumbPath, cleanup, nil
 }
