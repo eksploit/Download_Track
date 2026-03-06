@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"download_track/internal/urlutil"
@@ -26,19 +27,27 @@ type Fetcher interface {
 type DefaultFetcher struct {
 	HTTPClient   *http.Client
 	YtDlpTimeout time.Duration
-	// CookiesPath — необязательный путь к файлу cookies (Netscape format) для yt-dlp (например для Instagram).
-	CookiesPath string
+	CookiesPath  string
+	// Минимальный интервал между стартами загрузок с Instagram (0 = отключено).
+	InstagramMinInterval time.Duration
+	// Пауза в секундах перед началом загрузки в yt-dlp (--sleep-interval), только для Instagram; 0 = не добавлять.
+	YtDlpSleepInterval int
+
+	instagramMu        sync.Mutex
+	lastInstagramStart time.Time
 }
 
-// NewDefaultFetcher создаёт Fetcher с таймаутом для yt-dlp (например 10 минут). cookiesPath может быть пустым.
-func NewDefaultFetcher(ytDlpTimeout time.Duration, cookiesPath string) *DefaultFetcher {
+// NewDefaultFetcher создаёт Fetcher. cookiesPath может быть пустым; instagramMinInterval 0 отключает ограничение.
+func NewDefaultFetcher(ytDlpTimeout time.Duration, cookiesPath string, instagramMinInterval time.Duration, ytDlpSleepInterval int) *DefaultFetcher {
 	if ytDlpTimeout <= 0 {
 		ytDlpTimeout = 10 * time.Minute
 	}
 	return &DefaultFetcher{
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
-		YtDlpTimeout: ytDlpTimeout,
-		CookiesPath:  cookiesPath,
+		HTTPClient:           &http.Client{Timeout: 30 * time.Second},
+		YtDlpTimeout:         ytDlpTimeout,
+		CookiesPath:          cookiesPath,
+		InstagramMinInterval: instagramMinInterval,
+		YtDlpSleepInterval:   ytDlpSleepInterval,
 	}
 }
 
@@ -83,7 +92,7 @@ func (f *DefaultFetcher) fetchHTTP(ctx context.Context, url string) (string, fun
 	return path, cleanup, nil
 }
 
-// cookieJSON — структура одной записи в JSON-экспорте cookies (Chrome/EditThisCookie и т.п.).
+// cookieJSON — запись из JSON-экспорта cookies (Chrome/EditThisCookie и т.п.).
 type cookieJSON struct {
 	Domain         string  `json:"domain"`
 	Path           string  `json:"path"`
@@ -93,14 +102,13 @@ type cookieJSON struct {
 	Value          string  `json:"value"`
 }
 
-// cookiesPathForYtDlp возвращает путь к файлу cookies в формате Netscape. Если исходный файл в JSON — конвертирует во временный файл в dir.
+// cookiesPathForYtDlp возвращает путь к файлу в формате Netscape. Если исходный файл в JSON — конвертирует во временный файл в dir.
 func cookiesPathForYtDlp(cookiesPath, dir string) (string, error) {
 	data, err := os.ReadFile(cookiesPath)
 	if err != nil {
 		return "", err
 	}
 	trimmed := strings.TrimSpace(string(data))
-	// Уже Netscape: первая строка с # или домен с табами.
 	if strings.HasPrefix(trimmed, "#") || (len(trimmed) > 0 && !strings.HasPrefix(trimmed, "[")) {
 		return cookiesPath, nil
 	}
@@ -136,7 +144,7 @@ func cookiesPathForYtDlp(cookiesPath, dir string) (string, error) {
 		}
 		expiry := int64(c.ExpirationDate)
 		if expiry == 0 {
-			expiry = 2000000000 // далеко в будущем для сессионных
+			expiry = 2000000000
 		}
 		line := domain + "\t" + includeSubdomains + "\t" + pathVal + "\t" + secure + "\t" + strconv.FormatInt(expiry, 10) + "\t" + c.Name + "\t" + c.Value + "\n"
 		if _, err := f.WriteString(line); err != nil {
@@ -151,9 +159,33 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 	if err != nil {
 		return "", nil, fmt.Errorf("yt-dlp temp dir: %w", err)
 	}
-	// Таймаут для yt-dlp (длинные видео)
 	runCtx, cancel := context.WithTimeout(ctx, f.YtDlpTimeout)
 	defer cancel()
+
+	isInstagram := strings.Contains(url, "instagram.com")
+	if isInstagram && f.InstagramMinInterval > 0 {
+		f.instagramMu.Lock()
+		now := time.Now()
+		waitUntil := f.lastInstagramStart.Add(f.InstagramMinInterval)
+		if !f.lastInstagramStart.IsZero() && now.Before(waitUntil) {
+			needWait := time.Until(waitUntil)
+			f.instagramMu.Unlock()
+			for needWait > 0 {
+				timer := time.NewTimer(min(needWait, time.Second))
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					os.RemoveAll(dir)
+					return "", nil, ctx.Err()
+				case <-timer.C:
+					needWait = time.Until(waitUntil)
+				}
+			}
+			f.instagramMu.Lock()
+		}
+		f.lastInstagramStart = time.Now()
+		f.instagramMu.Unlock()
+	}
 
 	sourceBase := filepath.Join(dir, "source")
 	args := []string{
@@ -164,7 +196,10 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 		"-f", "bestvideo+bestaudio/best",
 		"--merge-output-format", "mkv",
 	}
-	if f.CookiesPath != "" {
+	if isInstagram && f.YtDlpSleepInterval > 0 {
+		args = append(args, "--sleep-interval", strconv.Itoa(f.YtDlpSleepInterval))
+	}
+	if isInstagram && f.CookiesPath != "" {
 		if _, err := os.Stat(f.CookiesPath); err == nil {
 			cookiesFile := f.CookiesPath
 			if converted, err := cookiesPathForYtDlp(f.CookiesPath, dir); err == nil {

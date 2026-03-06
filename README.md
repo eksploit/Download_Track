@@ -89,7 +89,8 @@
 # Особенности доставки
 
 - **YouTube/Instagram**: для ссылок на видео (youtube.com, youtu.be, instagram.com) доставка выполняется только в Telegram‑чат. Обычные ссылки на файлы по-прежнему позволяют выбрать email, чат или оба варианта.
-- **Cookies для Instagram**: если Instagram отвечает «login required» или блокирует загрузки, можно завести отдельный аккаунт для бота и передать его cookies в yt-dlp. В браузере, где вы вошли в этот аккаунт, экспортируйте cookies в файл. Поддерживаются форматы **Netscape** (расширение «Get cookies.txt») и **JSON** (массив объектов с полями `domain`, `name`, `value` и т.д. — JSON автоматически конвертируется в Netscape при скачивании). Укажите путь к файлу в переменной `YTDLP_COOKIES_PATH`, смонтируйте файл в контейнер `http-service` (в `docker-compose.yml` раскомментировать том `./cookies/instagram.txt:/cookies/instagram.txt:ro`) и перезапустите с пересозданием контейнера: `docker compose up -d --force-recreate http-service`. Папка `cookies/` добавлена в `.gitignore` — файл cookies не попадает в репозиторий; храните его только на сервере (полный доступ к аккаунту).
+- **Instagram: cookies**. yt-dlp для Instagram не поддерживает вход по паролю; при «login required» нужен файл cookies. Используйте отдельный технический аккаунт (**не личный** — возможны блокировки). В браузере войдите в аккаунт, экспортируйте cookies (Netscape или JSON — JSON конвертируется автоматически), сохраните в `cookies/instagram.txt`, задайте `YTDLP_COOKIES_PATH=/cookies/instagram.txt` в `.env`, раскомментируйте том в `docker-compose.yml` и перезапустите с `--force-recreate`. Папка `cookies/` в `.gitignore`.
+- **Ограничение частоты запросов (rate limit)**: Instagram может временно блокировать загрузки при нескольких запросах подряд. Чтобы снизить риск, задайте `INSTAGRAM_MIN_INTERVAL_SECONDS` (минимальный интервал между стартами загрузок, например 60) и/или `YTDLP_SLEEP_INTERVAL_SECONDS` (пауза перед началом загрузки в yt-dlp). При ошибке «login required» или «rate-limit» подождите 5–10 минут и повторите.
 - При выборе доставки на email бот может предупредить, если у пользователя Gmail и расширение файла относится к блокируемым (например, `.exe`, `.bat`, `.js` и др.) — в этом случае отправка на почту не выполняется, и предлагается использовать доставку в чат.
 
 # Переменные окружения
@@ -141,7 +142,9 @@
 
 | Переменная | Обязательная | Описание |
 |-------------|---------------|-----------|
-| `YTDLP_COOKIES_PATH` | нет | Путь к файлу cookies для yt-dlp (например для Instagram). Поддерживаются форматы Netscape и JSON (JSON конвертируется в Netscape при скачивании). Если задан и файл существует, yt-dlp вызывается с `--cookies`. Путь — внутри контейнера (смонтировать том в `docker-compose.yml` и задать, например, `YTDLP_COOKIES_PATH=/cookies/instagram.txt`). |
+| `YTDLP_COOKIES_PATH` | нет | Путь к файлу cookies для Instagram (Netscape или JSON). Только для ссылок на Instagram; при заданном пути yt-dlp вызывается с `--cookies`. Путь — внутри контейнера (смонтировать том в docker-compose). |
+| `INSTAGRAM_MIN_INTERVAL_SECONDS` | нет | Минимальный интервал (сек) между стартами загрузок с Instagram; 0 = отключено. Снижает риск rate limit и блокировки. |
+| `YTDLP_SLEEP_INTERVAL_SECONDS` | нет | Пауза (сек) перед началом загрузки в yt-dlp (`--sleep-interval`), только для Instagram; 0 = не добавлять. |
 
 ---
 

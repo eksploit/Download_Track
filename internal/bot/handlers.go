@@ -179,7 +179,7 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 		}
 		if err := b.svc.CallSend(apiKey, url, "telegram"); err != nil {
 			log.Println("CallSend video err:", err)
-			b.send(chatID, "Не удалось загрузить видео. Instagram и YouTube иногда требуют вход или ограничивают загрузки — попробуйте позже или другую ссылку.")
+			b.send(chatID, "Не удалось загрузить видео. Instagram и YouTube могут ограничивать частоту запросов — подождите 5–10 минут и попробуйте снова или отправьте другую ссылку.")
 			return
 		}
 		return

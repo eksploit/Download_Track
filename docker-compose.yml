@@ -37,11 +37,13 @@ services:
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
       TELEGRAM_API_BASE: ${TELEGRAM_API_BASE}
       YTDLP_COOKIES_PATH: ${YTDLP_COOKIES_PATH:-}
+      INSTAGRAM_MIN_INTERVAL_SECONDS: ${INSTAGRAM_MIN_INTERVAL_SECONDS:-0}
+      YTDLP_SLEEP_INTERVAL_SECONDS: ${YTDLP_SLEEP_INTERVAL_SECONDS:-0}
     ports:
       - "8080:8080"
     volumes:
       - ./http-logs:/logs
-      # Опционально: когда есть файл cookies для Instagram, раскомментировать и в .env задать YTDLP_COOKIES_PATH=/cookies/instagram.txt
+      # Для Instagram: положить cookies в ./cookies/instagram.txt и задать YTDLP_COOKIES_PATH=/cookies/instagram.txt в .env
       - ./cookies/instagram.txt:/cookies/instagram.txt:ro
 
   bot:

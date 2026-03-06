@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -78,9 +79,32 @@ func main() {
 	}
 
 	cookiesPath := os.Getenv("YTDLP_COOKIES_PATH")
-	fetcher := downloader.NewDefaultFetcher(10*time.Minute, cookiesPath)
+	instagramMinIntervalSec := 0
+	if s := os.Getenv("INSTAGRAM_MIN_INTERVAL_SECONDS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			instagramMinIntervalSec = n
+		}
+	}
+	ytDlpSleepSec := 0
+	if s := os.Getenv("YTDLP_SLEEP_INTERVAL_SECONDS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			ytDlpSleepSec = n
+		}
+	}
+	fetcher := downloader.NewDefaultFetcher(
+		10*time.Minute,
+		cookiesPath,
+		time.Duration(instagramMinIntervalSec)*time.Second,
+		ytDlpSleepSec,
+	)
 	if cookiesPath != "" {
-		log.Println("yt-dlp cookies: using file", cookiesPath)
+		log.Println("yt-dlp Instagram cookies: using file", cookiesPath)
+	}
+	if instagramMinIntervalSec > 0 {
+		log.Println("yt-dlp Instagram: min interval between starts", instagramMinIntervalSec, "s")
+	}
+	if ytDlpSleepSec > 0 {
+		log.Println("yt-dlp Instagram: --sleep-interval", ytDlpSleepSec, "s")
 	}
 	srv := httpserver.New(db, jobLogger, fetcher, emailDelivery, telegramDelivery, bothDelivery)
 
