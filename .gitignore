@@ -38,3 +38,7 @@ cookies/
 *.swp
 Download_Track.tar
 migrations.sql
+
+# Локальная документация проекта (не в репозиторий)
+ENV_RESTORE_GUIDE.md
+Download_Track.md

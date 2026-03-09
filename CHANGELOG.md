@@ -2,6 +2,13 @@
 
 ### Unreleased
 
+### 0.7.0 – Уведомление админу, порядок запуска, логи и имена файлов
+
+- **Уведомление админу о новой регистрации**: при успешной регистрации по `/register` бот отправляет в админ-чат сообщение: @username (или «без username»), telegram_id, email.
+- **Docker Compose: порядок запуска бота**: у сервиса `bot` добавлена зависимость от `postgres` с условием `service_healthy`. Устранена гонка при старте и сообщение «lookup postgres: no such host». Зависимости: `postgres` (condition: service_healthy), `http-service` и `telegram-bot-api` (condition: service_started).
+- **Единый формат логов доставки в Telegram**: в строках `telegram delivery:` добавлено поле `username`. Все записи содержат `user_id`, `username`, `telegram_id`, `url`, `mode`, `status`.
+- **Имя файла при прямой ссылке**: при скачивании по обычной HTTP-ссылке файл сохраняется с именем и расширением из URL; в Telegram и на email документ приходит с тем же именем (раньше — временное `dl-*`).
+
 ### 0.6.0 – YouTube и Instagram в чат
 - **Ограничение частоты загрузок с Instagram**: минимальный интервал между стартами (`INSTAGRAM_MIN_INTERVAL_SECONDS`) и пауза перед началом в yt-dlp (`YTDLP_SLEEP_INTERVAL_SECONDS`, `--sleep-interval`) для снижения риска rate limit и блокировки аккаунта.
 - **Instagram только через cookies**: yt-dlp не поддерживает вход по паролю для Instagram; восстановлена поддержка `YTDLP_COOKIES_PATH` (файл Netscape или JSON с автоконвертацией). Логин/пароль (`INSTAGRAM_USER`/`INSTAGRAM_PASS`) удалены.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -59,8 +60,33 @@ func (f *DefaultFetcher) Fetch(ctx context.Context, url string) (localPath strin
 	return f.fetchHTTP(ctx, url)
 }
 
-func (f *DefaultFetcher) fetchHTTP(ctx context.Context, url string) (string, func(), error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// filenameFromURL извлекает и санитизирует имя файла из URL (path, без query).
+// Если имя пустое или небезопасное — возвращает "downloaded-file".
+func filenameFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "downloaded-file"
+	}
+	name := path.Base(u.Path)
+	if name == "" || name == "." || name == "/" {
+		return "downloaded-file"
+	}
+	name = filepath.Clean(name)
+	name = strings.TrimPrefix(name, ".."+string(os.PathSeparator))
+	if name == ".." || name == "." {
+		return "downloaded-file"
+	}
+	if strings.ContainsRune(name, os.PathSeparator) || strings.Contains(name, "/") {
+		return "downloaded-file"
+	}
+	if len(name) > 200 {
+		name = name[:200]
+	}
+	return name
+}
+
+func (f *DefaultFetcher) fetchHTTP(ctx context.Context, fileURL string) (string, func(), error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
 		return "", nil, fmt.Errorf("http request: %w", err)
 	}
@@ -73,23 +99,29 @@ func (f *DefaultFetcher) fetchHTTP(ctx context.Context, url string) (string, fun
 		return "", nil, fmt.Errorf("http status %d", resp.StatusCode)
 	}
 
-	tmp, err := os.CreateTemp("", "dl-*")
+	fileName := filenameFromURL(fileURL)
+	dir, err := os.MkdirTemp("", "dl-*")
 	if err != nil {
+		return "", nil, fmt.Errorf("temp dir: %w", err)
+	}
+	localPath := filepath.Join(dir, fileName)
+	tmp, err := os.Create(localPath)
+	if err != nil {
+		os.RemoveAll(dir)
 		return "", nil, fmt.Errorf("temp file: %w", err)
 	}
-	path := tmp.Name()
 	_, err = io.Copy(tmp, resp.Body)
 	if err != nil {
 		tmp.Close()
-		os.Remove(path)
+		os.RemoveAll(dir)
 		return "", nil, fmt.Errorf("http copy: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(path)
+		os.RemoveAll(dir)
 		return "", nil, fmt.Errorf("close temp: %w", err)
 	}
-	cleanup := func() { _ = os.Remove(path) }
-	return path, cleanup, nil
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	return localPath, cleanup, nil
 }
 
 // cookieJSON — запись из JSON-экспорта cookies (Chrome/EditThisCookie и т.п.).

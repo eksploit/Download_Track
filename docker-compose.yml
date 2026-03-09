@@ -62,8 +62,12 @@ services:
     container_name: filemailer-bot
     restart: unless-stopped
     depends_on:
-      - http-service
-      - telegram-bot-api
+      postgres:
+        condition: service_healthy
+      http-service:
+        condition: service_started
+      telegram-bot-api:
+        condition: service_started
     environment:
       DB_DSN: ${DB_DSN}
       API_BASE: http://http-service:8080

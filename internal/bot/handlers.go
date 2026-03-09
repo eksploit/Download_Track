@@ -53,6 +53,11 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 			b.send(chatID, "Ошибка регистрации, попробуй позже.")
 		} else {
 			b.send(chatID, "Готово! Теперь просто пришли ссылку на файл.")
+			usernameStr := m.From.UserName
+			if usernameStr == "" {
+				usernameStr = "(без username)"
+			}
+			b.send(b.adminChatID, fmt.Sprintf("Новая регистрация: @%s (telegram_id=%d), email: %s", usernameStr, m.From.ID, email))
 		}
 		return
 	}

@@ -51,8 +51,8 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 		return fmt.Errorf("telegram token is empty")
 	}
 
-	d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=request\n",
-		user.ID, user.TelegramID, src, user.Mode)
+	d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=request\n",
+		user.ID, user.Username, user.TelegramID, src, user.Mode)
 
 	var file *os.File
 	var size int64
@@ -63,15 +63,15 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 		// src — URL: скачиваем во временный файл
 		getResp, err := d.Client.Get(src)
 		if err != nil {
-			d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=download_error error=%q\n",
-				user.ID, user.TelegramID, src, user.Mode, err.Error())
+			d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=download_error error=%q\n",
+				user.ID, user.Username, user.TelegramID, src, user.Mode, err.Error())
 			return fmt.Errorf("download failed: %w", err)
 		}
 		defer getResp.Body.Close()
 
 		if getResp.StatusCode != http.StatusOK {
-			d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=download_bad_status http_status=%d\n",
-				user.ID, user.TelegramID, src, user.Mode, getResp.StatusCode)
+			d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=download_bad_status http_status=%d\n",
+				user.ID, user.Username, user.TelegramID, src, user.Mode, getResp.StatusCode)
 			return fmt.Errorf("download bad status: %d", getResp.StatusCode)
 		}
 
@@ -106,8 +106,8 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 		filePath = src
 		f, err := os.Open(src)
 		if err != nil {
-			d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d path=%s mode=%s status=open_error error=%q\n",
-				user.ID, user.TelegramID, src, user.Mode, err.Error())
+			d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d path=%s mode=%s status=open_error error=%q\n",
+				user.ID, user.Username, user.TelegramID, src, user.Mode, err.Error())
 			return fmt.Errorf("open file: %w", err)
 		}
 		defer f.Close()
@@ -124,8 +124,8 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 		file = f
 	}
 
-	d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=downloaded size=%d\n",
-		user.ID, user.TelegramID, src, user.Mode, size)
+	d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=downloaded size=%d\n",
+		user.ID, user.Username, user.TelegramID, src, user.Mode, size)
 
 	// Для видео используем sendVideo — воспроизведение в чате; для остальных — sendDocument
 	useVideo := isVideoExtension(fileName)
@@ -194,8 +194,8 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 
 	resp, err := d.Client.Do(httpReq)
 	if err != nil {
-		d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=error error=%q\n",
-			user.ID, user.TelegramID, src, user.Mode, err.Error())
+		d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=error error=%q\n",
+			user.ID, user.Username, user.TelegramID, src, user.Mode, err.Error())
 		return fmt.Errorf("telegram %s request failed: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
@@ -206,13 +206,13 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 	}
 
 	if !apiResp.Ok {
-		d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=api_error description=%q\n",
-			user.ID, user.TelegramID, src, user.Mode, apiResp.Description)
+		d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=api_error description=%q\n",
+			user.ID, user.Username, user.TelegramID, src, user.Mode, apiResp.Description)
 		return fmt.Errorf("telegram api error: %s", apiResp.Description)
 	}
 
-	d.Logger.Printf("telegram delivery: user_id=%d telegram_id=%d url=%s mode=%s status=sent size=%d\n",
-		user.ID, user.TelegramID, src, user.Mode, size)
+	d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=sent size=%d\n",
+		user.ID, user.Username, user.TelegramID, src, user.Mode, size)
 
 	return nil
 }

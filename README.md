@@ -4,7 +4,7 @@
 
 ## Возможности
 
-- Регистрация пользователя по команде `/register email@example.com`, генерация API‑ключа.
+- Регистрация пользователя по команде `/register email@example.com`, генерация API‑ключа. Админу в чат приходит уведомление о новой регистрации (username, telegram_id, email).
 - Приём ссылок на файлы: бот предлагает inline‑клавиатуру с выбором способа доставки.
 - **Ссылки на видео YouTube и Instagram**: при отправке ссылки на youtube.com, youtu.be или instagram.com бот сразу сообщает «Скачивание началось…» и присылает видео в этот чат (без выбора способа доставки). Скачивание выполняется через yt-dlp в http-service.
 - Три режима доставки:
@@ -51,6 +51,7 @@
    ```bash
    docker compose up --build -d
    ```
+   Порядок запуска задан в `docker-compose.yml`: сначала postgres (до успешного healthcheck), затем http-service и telegram-bot-api, затем bot — так бот не стартует до появления БД в сети и не выдаёт «lookup postgres: no such host».
 
 3. Написать боту в Telegram, выполнить `/start`, затем `/register email@example.com` и отправить ссылку на файл (можно с командой `/send <url>`, можно просто ссылкой).
 
@@ -92,6 +93,7 @@
 
 # Особенности доставки
 
+- **Имя файла при прямой ссылке**: при отправке обычной ссылки на файл (не видео с YouTube/Instagram) скачанный файл сохраняется с именем и расширением из URL. В Telegram и на email документ приходит с тем же именем файла, что в ссылке.
 - **YouTube/Instagram**: для ссылок на видео (youtube.com, youtu.be, instagram.com) доставка выполняется только в Telegram‑чат. Обычные ссылки на файлы по-прежнему позволяют выбрать email, чат или оба варианта.
 - **Instagram: cookies**. По умолчанию том с cookies в docker-compose закомментирован; если он не нужен, не создавайте папку `cookies/`. yt-dlp для Instagram не поддерживает вход по паролю; при «login required» нужен файл cookies. Используйте отдельный технический аккаунт (**не личный** — возможны блокировки). В браузере войдите в аккаунт, экспортируйте cookies (Netscape или JSON — JSON конвертируется автоматически), сохраните в `cookies/instagram.txt`, задайте `YTDLP_COOKIES_PATH=/cookies/instagram.txt` в `.env`, раскомментируйте том в `docker-compose.yml` и перезапустите с `--force-recreate`. Папка `cookies/` в `.gitignore`.
 - **Ограничение частоты запросов (rate limit)**: Instagram может временно блокировать загрузки при нескольких запросах подряд. Чтобы снизить риск, задайте `INSTAGRAM_MIN_INTERVAL_SECONDS` (минимальный интервал между стартами загрузок, например 60) и/или `YTDLP_SLEEP_INTERVAL_SECONDS` (пауза перед началом загрузки в yt-dlp). При ошибке «login required» или «rate-limit» подождите 5–10 минут и повторите.
@@ -174,7 +176,7 @@
 | `/reject_change <id>` | Отклонить заявку на смену email |
 | `/list_changes` | Показать все активные заявки |
 
-Эти команды доступны только в административном чате (`ADMIN_CHAT_ID`).
+В админ-чат также приходят уведомления о новых регистрациях (после `/register`). Эти команды доступны только в административном чате (`ADMIN_CHAT_ID`).
 
 ---
 
@@ -214,10 +216,11 @@ user_id=1 username=user url=https://... mode=email status=downloading
 user_id=1 username=user url=https://... mode=email status=downloaded size=1351081
 user_id=1 username=user email=user@example.com url=https://... mode=email status=sent size=1351081
 ```
-## Пример для Telegram‑доставки:
+## Пример для Telegram‑доставки
+
 ```text
-telegram delivery: user_id=1 telegram_id=123456 url=https://... mode=telegram status=request
-telegram delivery: user_id=1 telegram_id=123456 url=https://... mode=telegram status=sent
+telegram delivery: user_id=1 username=user telegram_id=123456 url=https://... mode=telegram status=request
+telegram delivery: user_id=1 username=user telegram_id=123456 url=https://... mode=telegram status=sent
 ```
 
 ## Схема работы 
