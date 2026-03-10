@@ -44,7 +44,7 @@
 
 - **`internal/downloader`**  
   Слой скачивания по URL:
-  - `Fetch(ctx, url)` возвращает путь к временному файлу и `cleanup` для удаления;
+  - `Fetch(ctx, url)` возвращает `FetchResult` (путь, `Cleanup`, опционально `VideoMeta` для видео); при видео сервер пишет в jobLog строку `video fetch` с url, оценкой по пробе, форматом и размерами;
   - для обычных URL — HTTP GET во временный файл;
   - для YouTube/Instagram — yt-dlp (на загрузку одного файла отводится до 10 минут; если за это время загрузка не завершилась, она отменяется), затем нормализация ffmpeg в MP4 для корректного воспроизведения в Telegram iOS.
   - **Ограничение разрешения по размеру**: перед скачиванием вызывается yt-dlp `--dump-single-json` (без загрузки); по списку форматов оценивается размер варианта «лучшее видео до 1080p + лучшее аудио». Если суммарный размер ≤100 МБ — используется формат до 1080p, иначе до 720p (`chooseFormatBySize`). Так снижается нагрузка на ffmpeg и риск таймаута на слабом CPU.
@@ -165,9 +165,9 @@
     - `email` → `emailDelivery`;
     - `telegram` → `telegramDelivery`;
     - `both` → `bothDelivery`.
-  - скачивает URL через `fetcher.Fetch(ctx, file_url)` → `localPath`, `cleanup`;
-  - `defer cleanup()` удаляет временный файл после доставки;
-  - формирует `delivery.User` и вызывает `SendFile(ctx, user, localPath)`.
+  - скачивает URL через `fetcher.Fetch(ctx, file_url)` → `result` (Path, Cleanup, VideoMeta); при `result.VideoMeta != nil` логирует в jobLog строку `video fetch` (url, estimated_1080p_bytes, format, downloaded_bytes, transcoded_bytes);
+  - `defer result.Cleanup()` удаляет временный файл после доставки;
+  - формирует `delivery.User` и вызывает `SendFile(ctx, user, result.Path)`.
   - при ошибках отдаёт соответствующие HTTP‑коды (`401`, `400`, `500`, `502`).
 
 ---
@@ -177,7 +177,7 @@
 ### Общие типы
 
 - `type User struct { ID int; Email string; TelegramID int64; Username string; Mode string }`
-- `type Delivery interface { SendFile(ctx context.Context, user User, src string) error }` — `src` это путь к локальному файлу после `downloader.Fetch`.
+- `type Delivery interface { SendFile(ctx context.Context, user User, src string) error }` — `src` это путь к локальному файлу (`result.Path` после `downloader.Fetch`).
 
 ### Email‑доставка (`EmailDelivery`, `email.go`)
 

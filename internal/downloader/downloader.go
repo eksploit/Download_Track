@@ -19,9 +19,24 @@ import (
 	"download_track/internal/urlutil"
 )
 
-// Fetcher возвращает локальный путь к файлу по URL и функцию очистки (удаление временного файла).
+// VideoMeta — метаданные видео-пайплайна (yt-dlp + ffmpeg) для логирования.
+type VideoMeta struct {
+	Format              string // "1080p" или "720p"
+	Estimated1080pBytes int64  // оценка размера варианта до 1080p по пробе (0 если неизвестно или выбран 1080p)
+	SourceSizeBytes     int64  // размер после yt-dlp (вход ffmpeg)
+	TranscodeSizeBytes  int64  // размер после ffmpeg (выход)
+}
+
+// FetchResult — результат Fetch: путь к файлу, очистка и опциональные метаданные видео.
+type FetchResult struct {
+	Path     string
+	Cleanup  func()
+	VideoMeta *VideoMeta
+}
+
+// Fetcher возвращает результат загрузки по URL (путь, cleanup и при видео — метаданные для лога).
 type Fetcher interface {
-	Fetch(ctx context.Context, url string) (localPath string, cleanup func(), err error)
+	Fetch(ctx context.Context, url string) (FetchResult, error)
 }
 
 // DefaultFetcher реализует Fetcher: для видео-платформ (YouTube, Instagram) — yt-dlp, иначе HTTP GET.
@@ -52,8 +67,8 @@ func NewDefaultFetcher(ytDlpTimeout time.Duration, cookiesPath string, instagram
 	}
 }
 
-// Fetch скачивает файл по URL: для видео-платформ вызывает yt-dlp, иначе HTTP GET. Возвращает путь и cleanup.
-func (f *DefaultFetcher) Fetch(ctx context.Context, url string) (localPath string, cleanup func(), err error) {
+// Fetch скачивает файл по URL: для видео-платформ вызывает yt-dlp, иначе HTTP GET. Возвращает FetchResult.
+func (f *DefaultFetcher) Fetch(ctx context.Context, url string) (FetchResult, error) {
 	if urlutil.IsVideoPlatformURL(url) {
 		return f.fetchYtDlp(ctx, url)
 	}
@@ -85,43 +100,43 @@ func filenameFromURL(rawURL string) string {
 	return name
 }
 
-func (f *DefaultFetcher) fetchHTTP(ctx context.Context, fileURL string) (string, func(), error) {
+func (f *DefaultFetcher) fetchHTTP(ctx context.Context, fileURL string) (FetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
-		return "", nil, fmt.Errorf("http request: %w", err)
+		return FetchResult{}, fmt.Errorf("http request: %w", err)
 	}
 	resp, err := f.HTTPClient.Do(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("http get: %w", err)
+		return FetchResult{}, fmt.Errorf("http get: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("http status %d", resp.StatusCode)
+		return FetchResult{}, fmt.Errorf("http status %d", resp.StatusCode)
 	}
 
 	fileName := filenameFromURL(fileURL)
 	dir, err := os.MkdirTemp("", "dl-*")
 	if err != nil {
-		return "", nil, fmt.Errorf("temp dir: %w", err)
+		return FetchResult{}, fmt.Errorf("temp dir: %w", err)
 	}
 	localPath := filepath.Join(dir, fileName)
 	tmp, err := os.Create(localPath)
 	if err != nil {
 		os.RemoveAll(dir)
-		return "", nil, fmt.Errorf("temp file: %w", err)
+		return FetchResult{}, fmt.Errorf("temp file: %w", err)
 	}
 	_, err = io.Copy(tmp, resp.Body)
 	if err != nil {
 		tmp.Close()
 		os.RemoveAll(dir)
-		return "", nil, fmt.Errorf("http copy: %w", err)
+		return FetchResult{}, fmt.Errorf("http copy: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.RemoveAll(dir)
-		return "", nil, fmt.Errorf("close temp: %w", err)
+		return FetchResult{}, fmt.Errorf("close temp: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
-	return localPath, cleanup, nil
+	return FetchResult{Path: localPath, Cleanup: cleanup, VideoMeta: nil}, nil
 }
 
 // cookieJSON — запись из JSON-экспорта cookies (Chrome/EditThisCookie и т.п.).
@@ -157,8 +172,8 @@ type ytdlpInfo struct {
 }
 
 // chooseFormatBySize запрашивает у yt-dlp метаданные (без скачивания), оценивает размер варианта до 1080p
-// и возвращает formatMax1080 при размере ≤100 МБ, иначе formatMax720. При ошибке пробы возвращает formatMax720.
-func (f *DefaultFetcher) chooseFormatBySize(ctx context.Context, url, dir string, isInstagram bool) string {
+// и возвращает строку формата (formatMax1080/formatMax720) и оценку размера в байтах (0 при ошибке пробы).
+func (f *DefaultFetcher) chooseFormatBySize(ctx context.Context, url, dir string, isInstagram bool) (format string, estimated1080pBytes int64) {
 	probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
@@ -180,11 +195,11 @@ func (f *DefaultFetcher) chooseFormatBySize(ctx context.Context, url, dir string
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		return formatMax720
+		return formatMax720, 0
 	}
 	var info ytdlpInfo
 	if err := json.Unmarshal(out, &info); err != nil {
-		return formatMax720
+		return formatMax720, 0
 	}
 	var bestVideoSize int64 = -1
 	var bestVideoHeight int
@@ -212,13 +227,13 @@ func (f *DefaultFetcher) chooseFormatBySize(ctx context.Context, url, dir string
 		}
 	}
 	if bestVideoSize < 0 || bestAudioSize < 0 {
-		return formatMax720
+		return formatMax720, 0
 	}
 	total := bestVideoSize + bestAudioSize
 	if total <= videoSizeThreshold1080 {
-		return formatMax1080
+		return formatMax1080, total
 	}
-	return formatMax720
+	return formatMax720, total
 }
 
 // cookiesPathForYtDlp возвращает путь к файлу в формате Netscape. Если исходный файл в JSON — конвертирует во временный файл в dir.
@@ -273,10 +288,10 @@ func cookiesPathForYtDlp(cookiesPath, dir string) (string, error) {
 	return outPath, nil
 }
 
-func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, func(), error) {
+func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (FetchResult, error) {
 	dir, err := os.MkdirTemp("", "ytdlp-*")
 	if err != nil {
-		return "", nil, fmt.Errorf("yt-dlp temp dir: %w", err)
+		return FetchResult{}, fmt.Errorf("yt-dlp temp dir: %w", err)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, f.YtDlpTimeout)
 	defer cancel()
@@ -295,7 +310,7 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 				case <-ctx.Done():
 					timer.Stop()
 					os.RemoveAll(dir)
-					return "", nil, ctx.Err()
+					return FetchResult{}, ctx.Err()
 				case <-timer.C:
 					needWait = time.Until(waitUntil)
 				}
@@ -307,7 +322,7 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 	}
 
 	sourceBase := filepath.Join(dir, "source")
-	formatStr := f.chooseFormatBySize(runCtx, url, dir, isInstagram)
+	formatStr, estimated1080pBytes := f.chooseFormatBySize(runCtx, url, dir, isInstagram)
 	args := []string{
 		"-o", sourceBase + ".%(ext)s",
 		"--no-playlist",
@@ -335,13 +350,13 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		os.RemoveAll(dir)
-		return "", nil, fmt.Errorf("yt-dlp: %w (output: %s)", err, string(out))
+		return FetchResult{}, fmt.Errorf("yt-dlp: %w (output: %s)", err, string(out))
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		os.RemoveAll(dir)
-		return "", nil, fmt.Errorf("yt-dlp read dir: %w", err)
+		return FetchResult{}, fmt.Errorf("yt-dlp read dir: %w", err)
 	}
 	var foundPath string
 	var foundSize int64
@@ -370,17 +385,34 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 	}
 	if foundPath == "" {
 		os.RemoveAll(dir)
-		return "", nil, fmt.Errorf("yt-dlp: файл не найден (output: %s)", string(out))
+		return FetchResult{}, fmt.Errorf("yt-dlp: файл не найден (output: %s)", string(out))
 	}
 
 	normalizedPath := filepath.Join(dir, "video.mp4")
 	if err := transcodeForTelegramIOS(runCtx, foundPath, normalizedPath); err != nil {
 		os.RemoveAll(dir)
-		return "", nil, err
+		return FetchResult{}, err
 	}
 
+	transcodeSize := int64(0)
+	if st, err := os.Stat(normalizedPath); err == nil {
+		transcodeSize = st.Size()
+	}
+	formatLabel := "720p"
+	if formatStr == formatMax1080 {
+		formatLabel = "1080p"
+	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
-	return normalizedPath, cleanup, nil
+	return FetchResult{
+		Path:     normalizedPath,
+		Cleanup:  cleanup,
+		VideoMeta: &VideoMeta{
+			Format:              formatLabel,
+			Estimated1080pBytes: estimated1080pBytes,
+			SourceSizeBytes:     foundSize,
+			TranscodeSizeBytes:  transcodeSize,
+		},
+	}, nil
 }
 
 func transcodeForTelegramIOS(ctx context.Context, inputPath, outputPath string) error {

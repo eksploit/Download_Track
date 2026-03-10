@@ -134,15 +134,21 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	localPath, cleanup, err := s.fetcher.Fetch(r.Context(), req.FileURL)
+	result, err := s.fetcher.Fetch(r.Context(), req.FileURL)
 	if err != nil {
 		log.Println("fetcher Fetch err:", err)
 		http.Error(w, "fetch failed", http.StatusBadGateway)
 		return
 	}
-	defer cleanup()
+	defer result.Cleanup()
 
-	if err := d.SendFile(r.Context(), user, localPath); err != nil {
+	if result.VideoMeta != nil {
+		s.jobLog.Printf("video fetch: url=%s estimated_1080p_bytes=%d format=%s downloaded_bytes=%d transcoded_bytes=%d\n",
+			req.FileURL, result.VideoMeta.Estimated1080pBytes, result.VideoMeta.Format,
+			result.VideoMeta.SourceSizeBytes, result.VideoMeta.TranscodeSizeBytes)
+	}
+
+	if err := d.SendFile(r.Context(), user, result.Path); err != nil {
 		log.Println("delivery SendFile err:", err)
 		http.Error(w, "delivery failed", http.StatusBadGateway)
 		return

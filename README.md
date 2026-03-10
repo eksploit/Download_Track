@@ -206,7 +206,7 @@ HTTP‑сервис предоставляет эндпоинт:
 
 # Логи
 
-HTTP‑сервис пишет структурированные логи в `/logs/send.log` (внутри контейнера). На хосте этот путь обычно монтируется в локальный каталог (например, `./http-logs:/logs` в `docker-compose.yml`).
+HTTP‑сервис пишет структурированные логи в `/logs/send.log` (внутри контейнера). На хосте этот путь обычно монтируется в локальный каталог (например, `./http-logs:/logs` в `docker-compose.yml`). Для видео (YouTube/Instagram) дополнительно пишется строка `video fetch` с исходной ссылкой, оценкой размера по пробе, выбранным форматом (1080p/720p) и размерами после yt-dlp и ffmpeg (подробнее — в `Download_Track.md`).
 
 # Примеры логов доставки
 
@@ -223,6 +223,15 @@ user_id=1 username=user email=user@example.com url=https://... mode=email status
 ```text
 telegram delivery: user_id=1 username=user telegram_id=123456 url=https://... mode=telegram status=request
 telegram delivery: user_id=1 username=user telegram_id=123456 url=https://... mode=telegram status=sent
+```
+
+## Пример для доставки видео (YouTube/Instagram) в Telegram
+
+```text
+video fetch: url=https://youtu.be/... estimated_1080p_bytes=156000000 format=720p downloaded_bytes=13971690 transcoded_bytes=36645630
+telegram delivery: user_id=1 username=user telegram_id=123456 url=/tmp/ytdlp-.../video.mp4 mode=telegram status=request
+telegram delivery: user_id=1 username=user telegram_id=123456 url=/tmp/ytdlp-.../video.mp4 mode=telegram status=downloaded size=36645630
+telegram delivery: user_id=1 username=user telegram_id=123456 url=/tmp/ytdlp-.../video.mp4 mode=telegram status=sent size=36645630
 ```
 
 ## Схема работы 
