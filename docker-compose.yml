@@ -52,8 +52,8 @@ services:
       - "8080:8080"
     volumes:
       - ./http-logs:/logs
-      # Для Instagram: создать cookies/instagram.txt, задать YTDLP_COOKIES_PATH в .env, раскомментировать следующую строку и перезапустить с --force-recreate
-      # - ./cookies/instagram.txt:/cookies/instagram.txt:ro
+      # Для Instagram: создать cookies/instagram.txt, задать YTDLP_COOKIES_PATH в .env
+      - ./cookies/instagram.txt:/cookies/instagram.txt:ro
 
   bot:
     build:

@@ -134,6 +134,93 @@ type cookieJSON struct {
 	Value          string  `json:"value"`
 }
 
+// Порог размера (байты): при ориентировочном размере до videoSizeThreshold1080 скачиваем до 1080p, иначе до 720p.
+const videoSizeThreshold1080 = 100 * 1024 * 1024 // 100 МБ
+
+// Строки формата yt-dlp: ограничение по высоте кадра для снижения нагрузки на перекодирование (ffmpeg).
+const (
+	formatMax1080 = "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+	formatMax720  = "bestvideo[height<=720]+bestaudio/best[height<=720]"
+)
+
+// ytdlpFormat — один элемент из yt-dlp --dump-single-json .formats[].
+type ytdlpFormat struct {
+	Height   *int   `json:"height"`
+	Filesize *int64 `json:"filesize"`
+	Vcodec   string `json:"vcodec"`
+	Acodec   string `json:"acodec"`
+}
+
+// ytdlpInfo — корень JSON от yt-dlp --dump-single-json.
+type ytdlpInfo struct {
+	Formats []ytdlpFormat `json:"formats"`
+}
+
+// chooseFormatBySize запрашивает у yt-dlp метаданные (без скачивания), оценивает размер варианта до 1080p
+// и возвращает formatMax1080 при размере ≤100 МБ, иначе formatMax720. При ошибке пробы возвращает formatMax720.
+func (f *DefaultFetcher) chooseFormatBySize(ctx context.Context, url, dir string, isInstagram bool) string {
+	probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	args := []string{"--dump-single-json", "--no-playlist", "--no-download"}
+	if isInstagram && f.YtDlpSleepInterval > 0 {
+		args = append(args, "--sleep-interval", strconv.Itoa(f.YtDlpSleepInterval))
+	}
+	if isInstagram && f.CookiesPath != "" {
+		if _, err := os.Stat(f.CookiesPath); err == nil {
+			cookiesFile := f.CookiesPath
+			if converted, err := cookiesPathForYtDlp(f.CookiesPath, dir); err == nil {
+				cookiesFile = converted
+			}
+			args = append(args, "--cookies", cookiesFile)
+		}
+	}
+	args = append(args, url)
+	cmd := exec.CommandContext(probeCtx, "yt-dlp", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return formatMax720
+	}
+	var info ytdlpInfo
+	if err := json.Unmarshal(out, &info); err != nil {
+		return formatMax720
+	}
+	var bestVideoSize int64 = -1
+	var bestVideoHeight int
+	var bestAudioSize int64 = -1
+	for _, fm := range info.Formats {
+		hasVideo := fm.Vcodec != "" && fm.Vcodec != "none"
+		hasAudio := fm.Acodec != "" && fm.Acodec != "none"
+		h := 0
+		if fm.Height != nil {
+			h = *fm.Height
+		}
+		if hasVideo && h <= 1080 && h > bestVideoHeight {
+			bestVideoHeight = h
+			bestVideoSize = 0
+			if fm.Filesize != nil {
+				bestVideoSize = *fm.Filesize
+			} else {
+				bestVideoSize = -1
+			}
+		}
+		if hasAudio {
+			if fm.Filesize != nil && *fm.Filesize > bestAudioSize {
+				bestAudioSize = *fm.Filesize
+			}
+		}
+	}
+	if bestVideoSize < 0 || bestAudioSize < 0 {
+		return formatMax720
+	}
+	total := bestVideoSize + bestAudioSize
+	if total <= videoSizeThreshold1080 {
+		return formatMax1080
+	}
+	return formatMax720
+}
+
 // cookiesPathForYtDlp возвращает путь к файлу в формате Netscape. Если исходный файл в JSON — конвертирует во временный файл в dir.
 func cookiesPathForYtDlp(cookiesPath, dir string) (string, error) {
 	data, err := os.ReadFile(cookiesPath)
@@ -220,12 +307,13 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (string, fu
 	}
 
 	sourceBase := filepath.Join(dir, "source")
+	formatStr := f.chooseFormatBySize(runCtx, url, dir, isInstagram)
 	args := []string{
 		"-o", sourceBase + ".%(ext)s",
 		"--no-playlist",
 		"--no-part",
 		"--max-filesize", "1.9G",
-		"-f", "bestvideo+bestaudio/best",
+		"-f", formatStr,
 		"--merge-output-format", "mkv",
 	}
 	if isInstagram && f.YtDlpSleepInterval > 0 {
