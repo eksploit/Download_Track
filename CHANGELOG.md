@@ -3,6 +3,7 @@
 ### Unreleased
 
 - **Логирование пайплайна видео**: для видео (YouTube/Instagram) в `send.log` добавлена строка `video fetch` с исходной ссылкой (`url`), оценкой размера по пробе (`estimated_1080p_bytes`), выбранным форматом (`format` 1080p/720p) и фактическими размерами после yt-dlp и ffmpeg (`downloaded_bytes`, `transcoded_bytes`). Интерфейс `Fetcher` возвращает `FetchResult` с опциональными `VideoMeta`.
+- **Instagram: формат загрузки**: для ссылок на Instagram в yt-dlp используется формат `best` (один лучший файл без фильтра по разрешению), так как «видео+аудио» и `best[height<=...]` там часто недоступны («Requested format is not available»).
 
 ### 0.7.0 – Уведомление админу, порядок запуска, логи и имена файлов
 

@@ -153,9 +153,11 @@ type cookieJSON struct {
 const videoSizeThreshold1080 = 100 * 1024 * 1024 // 100 МБ
 
 // Строки формата yt-dlp: ограничение по высоте кадра для снижения нагрузки на перекодирование (ffmpeg).
+// Для YouTube — отдельные видео+аудио с мержем; для Instagram — один лучший файл (best), т.к. фильтры по height часто недоступны для reels.
 const (
-	formatMax1080 = "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
-	formatMax720  = "bestvideo[height<=720]+bestaudio/best[height<=720]"
+	formatMax1080       = "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+	formatMax720        = "bestvideo[height<=720]+bestaudio/best[height<=720]"
+	formatInstagramBest = "best"
 )
 
 // ytdlpFormat — один элемент из yt-dlp --dump-single-json .formats[].
@@ -323,12 +325,17 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (FetchResul
 
 	sourceBase := filepath.Join(dir, "source")
 	formatStr, estimated1080pBytes := f.chooseFormatBySize(runCtx, url, dir, isInstagram)
+	// Instagram: один лучший файл (best); фильтры best[height<=...] часто недоступны для reels → «Requested format is not available».
+	ytDlpFormat := formatStr
+	if isInstagram {
+		ytDlpFormat = formatInstagramBest
+	}
 	args := []string{
 		"-o", sourceBase + ".%(ext)s",
 		"--no-playlist",
 		"--no-part",
 		"--max-filesize", "1.9G",
-		"-f", formatStr,
+		"-f", ytDlpFormat,
 		"--merge-output-format", "mkv",
 	}
 	if isInstagram && f.YtDlpSleepInterval > 0 {
