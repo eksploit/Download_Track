@@ -149,6 +149,79 @@ type cookieJSON struct {
 	Value          string  `json:"value"`
 }
 
+// CookieExpiry возвращает минимальную дату истечения среди всех записей в файле cookies.
+// Поддерживаются форматы Netscape (строки domain\t...\texpiry\tname\tvalue, expiry — Unix секунды)
+// и JSON (массив объектов с полем expirationDate в секундах). При ошибке чтения, пустом файле
+// или неверном формате возвращает нулевое время и ошибку.
+func CookieExpiry(cookiesPath string) (time.Time, error) {
+	data, err := os.ReadFile(cookiesPath)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("чтение файла cookies: %w", err)
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return time.Time{}, fmt.Errorf("файл cookies пустой")
+	}
+	if strings.HasPrefix(trimmed, "[") {
+		return cookieExpiryJSON(data)
+	}
+	return cookieExpiryNetscape(trimmed)
+}
+
+// cookieExpiryJSON извлекает минимальную дату истечения из JSON-массива cookies.
+func cookieExpiryJSON(data []byte) (time.Time, error) {
+	var list []cookieJSON
+	if err := json.Unmarshal(data, &list); err != nil {
+		return time.Time{}, fmt.Errorf("парсинг JSON cookies: %w", err)
+	}
+	if len(list) == 0 {
+		return time.Time{}, fmt.Errorf("в JSON cookies нет записей")
+	}
+	var minExpiry time.Time
+	for _, c := range list {
+		if c.ExpirationDate <= 0 {
+			continue
+		}
+		t := time.Unix(int64(c.ExpirationDate), 0)
+		if minExpiry.IsZero() || t.Before(minExpiry) {
+			minExpiry = t
+		}
+	}
+	if minExpiry.IsZero() {
+		return time.Time{}, fmt.Errorf("в JSON cookies нет дат истечения")
+	}
+	return minExpiry, nil
+}
+
+// cookieExpiryNetscape извлекает минимальную дату истечения из файла в формате Netscape.
+func cookieExpiryNetscape(content string) (time.Time, error) {
+	lines := strings.Split(content, "\n")
+	var minExpiry int64
+	hasExpiry := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 5 {
+			continue
+		}
+		exp, err := strconv.ParseInt(parts[4], 10, 64)
+		if err != nil {
+			continue
+		}
+		if !hasExpiry || exp < minExpiry {
+			minExpiry = exp
+			hasExpiry = true
+		}
+	}
+	if !hasExpiry {
+		return time.Time{}, fmt.Errorf("в Netscape cookies нет записей с датой истечения")
+	}
+	return time.Unix(minExpiry, 0), nil
+}
+
 // Порог размера (байты): при ориентировочном размере до videoSizeThreshold1080 скачиваем до 1080p, иначе до 720p.
 const videoSizeThreshold1080 = 100 * 1024 * 1024 // 100 МБ
 

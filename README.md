@@ -12,6 +12,7 @@
   - **В этот чат** — файл отправляется напрямую в Telegram‑чат через локальный Telegram Bot API (поддержка файлов до 2 ГБ).
   - **И туда, и сюда** — файл доставляется одновременно на email и в Telegram‑чат.
 - Запрос смены email через `/change_email`, подтверждение/отклонение админом через `/approve_change` и `/reject_change`.
+- **Уведомления админу о cookies Instagram**: при заданных `TELEGRAM_TOKEN` и `ADMIN_CHAT_ID` http-service при старте проверяет доступность файла cookies (при недоступности или неверном формате шлёт сообщение в Telegram), по таймеру уведомляет за 7, 3 и 1 день до истечения; при ошибке загрузки с Instagram из-за логина — сообщение админу. В админ-чате команда `/cookie` — показать, сколько дней до истечения cookies.
 - Хранение пользователей и заявок в PostgreSQL.
 - Структурированные логи доставки с указанием режима (`mode=email/telegram/both`), статусов и размера файла.
 
@@ -89,7 +90,13 @@
    go build ./...
    go test ./...
    ```
-   Тесты: `extractFirstURL` (bot), `MultiDelivery.SendFile` (delivery), обработчик `/health` (httpserver). Файлы тестов — `*_test.go` рядом с кодом в `internal/bot`, `internal/delivery`, `internal/httpserver`.
+   Тесты расположены в `*_test.go` рядом с кодом:
+   - **internal/bot/handlers_test.go** — `extractFirstURL` (извлечение первой URL из сообщения).
+   - **internal/delivery/multi_test.go** — `MultiDelivery.SendFile` (режимы email/telegram/both, ошибки и успех).
+   - **internal/httpserver/server_test.go** — обработчик `GET /health` (статус 200, тело `ok`).
+   - **internal/downloader/downloader_test.go** — `CookieExpiry`: несуществующий/пустой файл, формат Netscape, JSON, неверный формат.
+   - **internal/adminnotify/adminnotify_test.go** — `New` (nil при пустых параметрах), `NotifyAdmin` (POST на мок-сервер), `CheckCookiesFileAtStartup` (недоступный файл, ошибка парсинга), `RunCookieExpiryCheck` (выход при пустом пути).
+   - **cmd/bot/main_test.go**, **cmd/http-service/main_test.go** — проверка сборки пакетов и импортов.
 
 # Особенности доставки
 
@@ -108,7 +115,7 @@
 | Переменная | Обязательная | Описание |
 |-------------|---------------|-----------|
 | `TELEGRAM_TOKEN` | да | Токен бота от [@BotFather](https://t.me/BotFather) |
-| `ADMIN_CHAT_ID` | да | Telegram ID администратора для подтверждения смены email |
+| `ADMIN_CHAT_ID` | да | Telegram ID администратора (подтверждение смены email; тот же используется http-service для уведомлений о cookies и ошибках Instagram) |
 | `API_BASE` | нет | Адрес HTTP‑сервиса (по умолчанию `http://http-service:8080`) |
 
 ---
@@ -150,9 +157,11 @@
 
 ## HTTP‑сервис (http-service)
 
+Для уведомлений админу о cookies и ошибках Instagram http-service использует те же `TELEGRAM_TOKEN`, `TELEGRAM_API_BASE` и `ADMIN_CHAT_ID`, что и бот (из общего `.env`).
+
 | Переменная | Обязательная | Описание |
 |-------------|---------------|-----------|
-| `YTDLP_COOKIES_PATH` | нет | Путь к файлу cookies для Instagram (Netscape или JSON). Только для ссылок на Instagram; при заданном пути yt-dlp вызывается с `--cookies`. Путь — внутри контейнера (смонтировать том в docker-compose). |
+| `YTDLP_COOKIES_PATH` | нет | Путь к файлу cookies для Instagram (Netscape или JSON). Для yt-dlp при загрузке с Instagram; также для проверки срока cookies, уведомлений за 7/3/1 день до истечения и ответа на команду `/cookie`. Путь — внутри контейнера (смонтировать том в docker-compose). |
 | `INSTAGRAM_MIN_INTERVAL_SECONDS` | нет | Минимальный интервал (сек) между стартами загрузок с Instagram; 0 = отключено. Снижает риск rate limit и блокировки. |
 | `YTDLP_SLEEP_INTERVAL_SECONDS` | нет | Пауза (сек) перед началом загрузки в yt-dlp (`--sleep-interval`), только для Instagram; 0 = не добавлять. |
 
@@ -177,16 +186,18 @@
 | `/approve_change <id>` | Подтвердить заявку на смену email |
 | `/reject_change <id>` | Отклонить заявку на смену email |
 | `/list_changes` | Показать все активные заявки |
+| `/cookie` | Показать, сколько дней до истечения cookies Instagram (запрос к http-service) |
 
-В админ-чат также приходят уведомления о новых регистрациях (после `/register`). Эти команды доступны только в административном чате (`ADMIN_CHAT_ID`).
+В админ-чат также приходят уведомления о новых регистрациях (после `/register`) и от http-service: о недоступности файла cookies, об ошибке формата cookies, за 7/3/1 день до истечения cookies, при ошибке загрузки с Instagram из-за логина. Эти команды доступны только в административном чате (`ADMIN_CHAT_ID`).
 
 ---
 
 ## HTTP API
 
-HTTP‑сервис предоставляет эндпоинт:
+HTTP‑сервис предоставляет эндпоинты:
 
 - `POST /send` — запрос на доставку файла пользователю.
+- `GET /cookie-status` — статус cookies Instagram (дата истечения, дни до истечения; при недоступном файле или ошибке парсинга — соответствующий ответ). Используется ботом для команды `/cookie`.
 
 Тело запроса (JSON):
 

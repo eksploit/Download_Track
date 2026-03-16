@@ -5,10 +5,18 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strings"
+	"time"
 
 	"download_track/internal/delivery"
 	"download_track/internal/downloader"
 )
+
+// AdminNotifier — опциональный уведомитель админа (например при истечении cookies или ошибке Instagram).
+type AdminNotifier interface {
+	NotifyAdmin(msg string)
+}
 
 type SMTPConfig struct {
 	Host     string
@@ -25,6 +33,8 @@ type Server struct {
 	emailDelivery    delivery.Delivery
 	telegramDelivery delivery.Delivery
 	bothDelivery     delivery.Delivery
+	adminNotifier    AdminNotifier
+	cookiesPath      string
 }
 
 type sendRequest struct {
@@ -33,7 +43,7 @@ type sendRequest struct {
 	Mode    string `json:"mode"` // "email", "telegram", "both"
 }
 
-func New(db *sql.DB, jobLog *log.Logger, fetcher downloader.Fetcher, email delivery.Delivery, telegram delivery.Delivery, both delivery.Delivery) *Server {
+func New(db *sql.DB, jobLog *log.Logger, fetcher downloader.Fetcher, email delivery.Delivery, telegram delivery.Delivery, both delivery.Delivery, adminNotifier AdminNotifier, cookiesPath string) *Server {
 	return &Server{
 		db:               db,
 		jobLog:           jobLog,
@@ -41,6 +51,8 @@ func New(db *sql.DB, jobLog *log.Logger, fetcher downloader.Fetcher, email deliv
 		emailDelivery:    email,
 		telegramDelivery: telegram,
 		bothDelivery:     both,
+		adminNotifier:    adminNotifier,
+		cookiesPath:      cookiesPath,
 	}
 }
 
@@ -48,6 +60,58 @@ func New(db *sql.DB, jobLog *log.Logger, fetcher downloader.Fetcher, email deliv
 func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/send", s.handleSend)
+	mux.HandleFunc("/cookie-status", s.handleCookieStatus)
+}
+
+// cookieStatusResponse — ответ GET /cookie-status.
+type cookieStatusResponse struct {
+	Available  bool   `json:"available"`
+	Expired    bool   `json:"expired,omitempty"` // true только если дата истечения уже в прошлом
+	ParseError bool   `json:"parse_error,omitempty"`
+	Expiry     string `json:"expiry,omitempty"`
+	DaysLeft   int    `json:"days_left,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+func (s *Server) handleCookieStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cookiesPath == "" {
+		json.NewEncoder(w).Encode(cookieStatusResponse{Available: false, Error: "cookies path not configured"})
+		return
+	}
+	if _, err := os.Stat(s.cookiesPath); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(cookieStatusResponse{Available: false, Error: "unavailable"})
+		return
+	}
+	expiry, err := downloader.CookieExpiry(s.cookiesPath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(cookieStatusResponse{Available: false, ParseError: true, Error: err.Error()})
+		return
+	}
+	now := time.Now()
+	if expiry.Before(now) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(cookieStatusResponse{
+			Available: true,
+			Expired:   true,
+			Expiry:    expiry.Format("02.01.2006"),
+			DaysLeft:  0,
+		})
+		return
+	}
+	daysLeft := int(expiry.Sub(now).Hours() / 24)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(cookieStatusResponse{
+		Available: true,
+		Expired:   false,
+		Expiry:    expiry.Format("02.01.2006"),
+		DaysLeft:  daysLeft,
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +200,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.fetcher.Fetch(r.Context(), req.FileURL)
 	if err != nil {
+		if s.adminNotifier != nil && strings.Contains(req.FileURL, "instagram.com") && strings.Contains(strings.ToLower(err.Error()), "login") {
+			s.adminNotifier.NotifyAdmin("Не удалось скачать видео с Instagram. Возможно, истекли cookies. Обновите cookies/instagram.txt.")
+		}
 		log.Println("fetcher Fetch err:", err)
 		http.Error(w, "fetch failed", http.StatusBadGateway)
 		return

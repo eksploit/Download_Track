@@ -10,6 +10,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"download_track/internal/adminnotify"
 	"download_track/internal/delivery"
 	"download_track/internal/downloader"
 	"download_track/internal/httpserver"
@@ -100,13 +101,26 @@ func main() {
 	if cookiesPath != "" {
 		log.Println("yt-dlp Instagram cookies: using file", cookiesPath)
 	}
+	adminChatID := os.Getenv("ADMIN_CHAT_ID")
+	var notifier *adminnotify.Notifier
+	if telegramToken != "" && adminChatID != "" {
+		notifier = adminnotify.New(telegramToken, telegramAPIBase, adminChatID)
+		if cookiesPath != "" {
+			adminnotify.CheckCookiesFileAtStartup(cookiesPath, notifier)
+			go adminnotify.RunCookieExpiryCheck(cookiesPath, notifier, 24*time.Hour)
+		}
+	}
 	if instagramMinIntervalSec > 0 {
 		log.Println("yt-dlp Instagram: min interval between starts", instagramMinIntervalSec, "s")
 	}
 	if ytDlpSleepSec > 0 {
 		log.Println("yt-dlp Instagram: --sleep-interval", ytDlpSleepSec, "s")
 	}
-	srv := httpserver.New(db, jobLogger, fetcher, emailDelivery, telegramDelivery, bothDelivery)
+	var adminNotifier httpserver.AdminNotifier
+	if notifier != nil {
+		adminNotifier = notifier
+	}
+	srv := httpserver.New(db, jobLogger, fetcher, emailDelivery, telegramDelivery, bothDelivery, adminNotifier, cookiesPath)
 
 	mux := http.NewServeMux()
 	srv.Routes(mux)

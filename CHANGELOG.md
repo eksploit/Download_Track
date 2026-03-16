@@ -2,8 +2,10 @@
 
 ### Unreleased
 
+- **Уведомление админу о cookies Instagram**: при заданных `TELEGRAM_TOKEN` и `ADMIN_CHAT_ID` http-service при старте проверяет доступность файла cookies (при недоступности или ошибке парсинга шлёт сообщение в Telegram); по таймеру (раз в сутки) уведомляет за 7, 3 и 1 день до истечения; при ошибке загрузки с Instagram из-за логина («login required») — сообщение админу. Добавлен пакет `internal/adminnotify` (Notifier, CheckCookiesFileAtStartup, RunCookieExpiryCheck), в downloader — функция `CookieExpiry(path)` (парсинг Netscape/JSON). Endpoint `GET /cookie-status` возвращает дату истечения, дни до истечения и флаг `expired` (true только если дата уже в прошлом). В боте — админ-команда `/cookie` (показать, сколько дней до истечения cookies; при остатке меньше 1 дня выводится «меньше 1 дня», а не «истекли»).
 - **Логирование пайплайна видео**: для видео (YouTube/Instagram) в `send.log` добавлена строка `video fetch` с исходной ссылкой (`url`), оценкой размера по пробе (`estimated_1080p_bytes`), выбранным форматом (`format` 1080p/720p) и фактическими размерами после yt-dlp и ffmpeg (`downloaded_bytes`, `transcoded_bytes`). Интерфейс `Fetcher` возвращает `FetchResult` с опциональными `VideoMeta`.
 - **Instagram: формат загрузки**: для ссылок на Instagram в yt-dlp используется формат `best` (один лучший файл без фильтра по разрешению), так как «видео+аудио» и `best[height<=...]` там часто недоступны («Requested format is not available»).
+- **Автотесты**: добавлены тесты для `internal/downloader` (CookieExpiry: пустой/несуществующий файл, Netscape, JSON, неверный формат), `internal/adminnotify` (New, NotifyAdmin, CheckCookiesFileAtStartup, RunCookieExpiryCheck), а также проверка сборки пакетов в `cmd/bot` и `cmd/http-service`. Полный список тестов — в README (раздел «Сборка и автотесты») и в ARCHITECTURE.md (раздел «Тесты»).
 
 ### 0.7.0 – Уведомление админу, порядок запуска, логи и имена файлов
 

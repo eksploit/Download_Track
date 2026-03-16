@@ -14,6 +14,16 @@ import (
 	"strings"
 )
 
+// cookieStatusResponse совпадает с ответом GET /cookie-status http-service.
+type cookieStatusResponse struct {
+	Available  bool   `json:"available"`
+	Expired    bool   `json:"expired"`
+	ParseError bool   `json:"parse_error"`
+	Expiry     string `json:"expiry"`
+	DaysLeft   int    `json:"days_left"`
+	Error      string `json:"error"`
+}
+
 // sendReq — тело запроса к HTTP API /send.
 type sendReq struct {
 	APIKey  string `json:"api_key"`
@@ -198,6 +208,32 @@ func (s *service) CallSend(apiKey, fileURL, mode string) error {
 		return errors.New("send http status " + resp.Status)
 	}
 	return nil
+}
+
+// GetCookieStatus запрашивает GET /cookie-status у http-service и возвращает сообщение для админа.
+func (s *service) GetCookieStatus() (string, error) {
+	resp, err := http.Get(s.apiBase + "/cookie-status")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var status cookieStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return "", err
+	}
+	if !status.Available {
+		if status.ParseError {
+			return "Файл cookies найден, но не удаётся определить срок истечения. Проверьте формат (Netscape или JSON).", nil
+		}
+		return "Файл cookies Instagram недоступен.", nil
+	}
+	if status.Expired {
+		return fmt.Sprintf("Cookies Instagram истекли (%s).", status.Expiry), nil
+	}
+	if status.DaysLeft == 0 {
+		return fmt.Sprintf("До истечения cookies Instagram: меньше 1 дня (%s).", status.Expiry), nil
+	}
+	return fmt.Sprintf("До истечения cookies Instagram: %d дн. (%s).", status.DaysLeft, status.Expiry), nil
 }
 
 func generateAPIKey() (string, error) {

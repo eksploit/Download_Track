@@ -7,7 +7,7 @@ import (
 )
 
 func TestServer_HandleHealth(t *testing.T) {
-	srv := New(nil, nil, nil, nil, nil, nil)
+	srv := New(nil, nil, nil, nil, nil, nil, nil, "")
 	mux := http.NewServeMux()
 	srv.Routes(mux)
 

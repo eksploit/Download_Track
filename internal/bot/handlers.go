@@ -73,7 +73,8 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 			b.send(chatID, "Админские команды:\n"+
 				"/approve_change <id> - подтвердить смену email\n"+
 				"/reject_change <id> - отклонить смену email\n"+
-				"/list_changes - показать все заявки")
+				"/list_changes - показать все заявки\n"+
+				"/cookie - показать, сколько дней до истечения cookies Instagram")
 		}
 
 		return
@@ -150,6 +151,20 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 		if err := b.listEmailChanges(chatID); err != nil {
 			log.Println("listEmailChanges err:", err)
 			b.send(chatID, "Ошибка получения списка заявок: "+err.Error())
+		}
+		return
+	}
+
+	if strings.HasPrefix(text, "/cookie") {
+		if chatID != b.adminChatID {
+			return
+		}
+		msg, err := b.svc.GetCookieStatus()
+		if err != nil {
+			log.Println("GetCookieStatus err:", err)
+			b.send(chatID, "Ошибка запроса статуса cookies: "+err.Error())
+		} else {
+			b.send(chatID, msg)
 		}
 		return
 	}

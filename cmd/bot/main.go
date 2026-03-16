@@ -73,6 +73,7 @@ func main() {
 		{Command: "approve_change", Description: "Подтвердить смену email: /approve_change <id>"},
 		{Command: "reject_change", Description: "Отклонить смену email: /reject_change <id>"},
 		{Command: "list_changes", Description: "Показать все заявки на смену email"},
+		{Command: "cookie", Description: "Показать, сколько дней до истечения cookies Instagram"},
 	}
 
 	scope := tgbotapi.NewBotCommandScopeChat(adminChatID)
