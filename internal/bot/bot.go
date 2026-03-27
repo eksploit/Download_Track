@@ -18,11 +18,11 @@ type Bot struct {
 	pendingLinks map[int64]string // telegramID -> последняя ссылка, ожидающая выбора режима
 }
 
-func New(api *tgbotapi.BotAPI, db *sql.DB, apiBase string, adminChatID int64) *Bot {
+func New(api *tgbotapi.BotAPI, db *sql.DB, apiBase string, adminChatID int64, adminJobLogToken string) *Bot {
 	repo := newRepo(db)
 	return &Bot{
 		api:          api,
-		svc:          newService(repo, apiBase),
+		svc:          newService(repo, apiBase, adminJobLogToken),
 		adminChatID:  adminChatID,
 		pendingLinks: make(map[int64]string),
 	}

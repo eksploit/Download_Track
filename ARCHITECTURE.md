@@ -78,7 +78,9 @@
   - `TELEGRAM_TOKEN` — токен бота;
   - `API_BASE` — базовый URL HTTP‑сервиса (по умолчанию `http://http-service:8080`);
   - `DB_DSN` — строка подключения к PostgreSQL;
-  - `ADMIN_CHAT_ID` — Telegram‑ID администратора.
+  - `ADMIN_CHAT_ID` — Telegram‑ID администратора;
+  - **`ADMIN_JOB_LOG_TOKEN`** (опционально) — тот же секрет, что у `http-service`, для вызова **`GET /job-log`** из бота; если пусто, админ-команда **`/logs`** сообщает, что токен не настроен.
+- В **`docker-compose.yml`** в контейнер `bot` прокидывается **`ADMIN_JOB_LOG_TOKEN`** из общего `.env`. Просмотр хвоста лога с хоста без бота: **`curl`** с Bearer и токеном из `.env` (см. **`README.md`**, **`Download_Track.md`**).
 - Инициализирует:
   - подключение к PostgreSQL (`sql.DB`);
   - клиент Telegram Bot API (`tgbotapi.BotAPI`);
@@ -107,6 +109,7 @@
   - `/change_email new@example.com` — заявка на смену email через `svc.RequestEmailChange`, уведомление админа;
   - `/approve_change <id>`, `/reject_change <id>`, `/list_changes` — админские операции через сервис и репозиторий (`email_change_requests`);
   - `/cookie` — только в админ-чате: запрос `GET {API_BASE}/cookie-status` к http-service и ответ админу (сколько дней до истечения cookies Instagram или сообщение о недоступности/ошибке формата).
+  - **`/logs [N]`** — только в админ-чате: при непустом **`ADMIN_JOB_LOG_TOKEN`** — **`svc.GetJobLogPreview`**: `GET {API_BASE}/job-log?lines=N` с заголовком **`Authorization: Bearer`**, разбор JSON, форматирование в текст (группы по **`request_id`**, компактные поля для **`video_pipeline`** / **`delivery`**). Для привязки к пользователю в конец строки добавляется **`jobLogUserSuffix`** (если в объекте есть соответствующие поля): **`uid=`** из **`user_id`**, **`@username`** из **`username`**, **`tg=`** из **`telegram_id`**; для событий без этих полей суффикс пустой. **`N`** по умолчанию 20, не больше **`internal/joblog.MaxLinesLimit` (100)**. Если текст длиннее **4096** символов (по рунам) — отправка **документа** `job-log.txt` вместо сообщения.
 
 - При отсутствии команды:
   - из сообщения извлекается первая URL‑ссылка (`extractFirstURL`);
@@ -291,7 +294,7 @@ PostgreSQL используется минимум для следующих с�
 - контейнер с `telegram-bot-api` (локальный Bot API);
 - внешний/внутренний SMTP‑сервер.
 
-Все настройки сервисов передаются через переменные окружения, подробно описанные в `README.md`. В `docker-compose.yml` в окружение `http-service` прокидываются те же `TELEGRAM_TOKEN`, `TELEGRAM_API_BASE` и `ADMIN_CHAT_ID`, что и у `bot` (значения из общего `.env`); также **`JOB_LOG_PATH`** (по умолчанию `/logs/send.log`) и **`ADMIN_JOB_LOG_TOKEN`** (для **`GET /job-log`**; у `bot` — то же значение, если понадобится вызывать эндпоинт из бота).
+Все настройки сервисов передаются через переменные окружения, подробно описанные в `README.md`. В `docker-compose.yml` в окружение `http-service` прокидываются те же `TELEGRAM_TOKEN`, `TELEGRAM_API_BASE` и `ADMIN_CHAT_ID`, что и у `bot` (значения из общего `.env`); также **`JOB_LOG_PATH`** (по умолчанию `/logs/send.log`) и **`ADMIN_JOB_LOG_TOKEN`**. У **`bot`** токен **`ADMIN_JOB_LOG_TOKEN`** передаётся из `.env` и читается в **`cmd/bot/main.go`** для **`/logs`**. Шаблон переменных — **`.env.example`**, порядок восстановления — **`ENV_RESTORE_GUIDE.md`**.
 
 ### Поток: хвост job-лога по HTTP
 
@@ -305,7 +308,7 @@ Unit-тесты расположены в тех же пакетах, что и 
 
 - **`internal/bot/handlers_test.go`** — тесты для `extractFirstURL` (извлечение первой URL из сообщения по entities).
 - **`internal/delivery/multi_test.go`** — тесты для `MultiDelivery.SendFile` (оба канала nil, только email/telegram, ошибки и успех).
-- **`internal/httpserver/server_test.go`** — тесты для `GET /health` (статус 200, тело `ok`); **`GET /job-log`** (маршрут не регистрируется без токена; 401 без заголовка; 200 с Bearer и с `X-Admin-Token`).
+- **`internal/httpserver/server_test.go`** — тесты для `GET /health` (статус 200, тело `ok`); **`GET /job-log`** (маршрут не регистрируется без токена; 401 без заголовка; 404 при отсутствии файла лога; 200 с Bearer и с `X-Admin-Token`).
 - **`internal/downloader/downloader_test.go`** — тесты для `CookieExpiry`: несуществующий файл, пустой файл, только пробелы, формат Netscape (минимальная дата, только комментарии), формат JSON (минимальная дата, пустой массив, отсутствие дат истечения), неверный формат; тесты для **`DaysLeftCeil`** (истёкший срок, границы округления).
 - **`internal/adminnotify/adminnotify_test.go`** — тесты для `New` (nil при пустом token или adminChatID, подстановка apiBase по умолчанию), **`NotifyAdmin` (bool; POST на мок-сервер; ответы `ok:false` и не-200)**, `formatDaysRu`, `CheckCookiesFileAtStartup`, **`runCookieExpiryIteration` (ретраи, флаг только после успеха)**, `RunCookieExpiryCheck` (при пустом пути горутина сразу завершается).
 - **`internal/joblog/joblog_test.go`** — тесты для **`TailEntries`**: пустой файл; NDJSON с битой строкой; усечение **`maxLines`** сверх **`MaxLinesLimit`**; большой файл (последние записи); файл больше внутреннего чанка чтения (хвост и маркер в конце); **`maxLines` = 0**.

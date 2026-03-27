@@ -42,7 +42,7 @@
 
 ## Быстрый старт
 
-1. Скопировать `.env.example` в `.env` и заполнить все параметры.
+1. Скопировать `.env.example` в `.env` и заполнить все параметры. Пошаговое восстановление и расшифровка переменных — **`ENV_RESTORE_GUIDE.md`** (в том числе **`JOB_LOG_PATH`** и **`ADMIN_JOB_LOG_TOKEN`**).
    - В `DB_DSN` укажите те же логин, пароль и базу, что в `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` (хост — `postgres`, порт — `5432`).
    - `ADMIN_CHAT_ID` — ваш Telegram ID (например, узнайте у [@userinfobot](https://t.me/userinfobot) или из логов бота при первом сообщении в админ-чат).
    - `TELEGRAM_API_ID` и `TELEGRAM_API_HASH` — на [my.telegram.org](https://my.telegram.org) → «API development tools» → создать приложение → скопировать api_id и api_hash.
@@ -207,6 +207,7 @@
 | `/reject_change <id>` | Отклонить заявку на смену email |
 | `/list_changes` | Показать все активные заявки |
 | `/cookie` | Показать, сколько дней до истечения cookies Instagram (запрос к http-service) |
+| `/logs [N]` | Хвост job-лога (**`GET /job-log`**, **N** строк, по умолчанию 20, макс. 100): группы по **`request_id`**, поля события и при наличии в JSON — **`uid=`**, **`@username`**, **`tg=`**; длинный вывод — **`job-log.txt`**. Нужен **`ADMIN_JOB_LOG_TOKEN`**. Подробности — раздел **«Логи»**. |
 
 В админ-чат также приходят уведомления о новых регистрациях (после `/register`) и от http-service: о недоступности файла cookies, об ошибке формата cookies, **об истечении cookies** (минимальная дата уже в прошлом), **до истечения** с текстом вида «Остаётся N …» при первом попадании в пороги ≤7, ≤3 и ≤1 суток (N — фактический остаток по той же формуле, что и `/cookie-status`), при ошибке загрузки с Instagram из-за логина. Сообщение не гарантируется при каждом рестарте: если файл в порядке и до истечения больше 7 суток по расчёту, уведомление не шлётся. Эти команды доступны только в административном чате (`ADMIN_CHAT_ID`).
 
@@ -242,8 +243,10 @@ HTTP‑сервис пишет job-логи в файл по пути **`JOB_LOG
 
 Общие поля: время и уровень добавляет handler; в теле сообщения — `msg` (краткое описание), для цепочки `POST /send` — **`request_id`** (случайный hex, 32 символа), передаваемый в контексте в `Fetch` и `SendFile`. Поле **`url`** в доставке — обрезанная до 256 символов ссылка или путь (суффикс `...` при обрезке).
 
-- Событие **`video_pipeline`** (`event=video_pipeline`, `msg` «video pipeline»): для YouTube/Instagram после успешного `Fetch` — исходный `file_url`, `format`, `estimated_1080p_bytes`, `downloaded_bytes` / `transcoded_bytes`, **`probe_ms`**, **`ytdlp_ms`**, **`ffmpeg_ms`** (длительности этапов в миллисекундах).
-- События доставки (**`event=delivery`**): `channel` (`email` / `telegram`), `stage` / `status` (например `received`, `downloading`, `sent`, ошибки), `user_id`, `mode`, при необходимости `size`, `email`, `telegram_id`.
+- Событие **`video_pipeline`** (`event=video_pipeline`, `msg` «video pipeline»): для YouTube/Instagram после успешного `Fetch` — исходный `file_url`, `format`, `estimated_1080p_bytes`, `downloaded_bytes` / `transcoded_bytes`, **`probe_ms`**, **`ytdlp_ms`**, **`ffmpeg_ms`** (длительности этапов в миллисекундах); также **`user_id`** и **`mode`**.
+- События доставки (**`event=delivery`**): `channel` (`email` / `telegram`), `stage` / `status` (например `received`, `downloading`, `sent`, ошибки), `user_id`, `mode`, при необходимости `size`, `email`, **`username`**, **`telegram_id`**.
+
+В админ-чате бот по команде **`/logs`** показывает тот же хвост в сжатом виде: к полям события добавляются **`uid=`**, **`@username`**, **`tg=`**, если соответствующие ключи есть в строке NDJSON (реализация — **`jobLogUserSuffix`** в **`internal/bot/service.go`**).
 
 Разбор построчно: `while IFS= read -r line; do [ -n "$line" ] && jq . <<< "$line"; done < send.log` или фильтры вроде `grep '"event":"video_pipeline"' send.log | jq .`.
 

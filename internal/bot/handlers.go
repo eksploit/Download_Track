@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -74,7 +76,8 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 				"/approve_change <id> - подтвердить смену email\n"+
 				"/reject_change <id> - отклонить смену email\n"+
 				"/list_changes - показать все заявки\n"+
-				"/cookie - показать, сколько дней до истечения cookies Instagram")
+				"/cookie - показать, сколько дней до истечения cookies Instagram\n"+
+				"/logs [N] - хвост job-лога (N строк, по умолчанию 20, не больше 100)")
 		}
 
 		return
@@ -166,6 +169,41 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 		} else {
 			b.send(chatID, msg)
 		}
+		return
+	}
+
+	if strings.HasPrefix(text, "/logs") {
+		if chatID != b.adminChatID {
+			return
+		}
+		parts := strings.Fields(text)
+		base := parts[0]
+		if i := strings.Index(base, "@"); i >= 0 {
+			base = base[:i]
+		}
+		if base != "/logs" {
+			return
+		}
+		if len(parts) > 2 {
+			b.send(chatID, "Использование: /logs [N] — N от 1 до 100, по умолчанию 20.")
+			return
+		}
+		n := 0
+		if len(parts) == 2 {
+			v, err := strconv.Atoi(parts[1])
+			if err != nil {
+				b.send(chatID, "Использование: /logs [N] — N от 1 до 100, по умолчанию 20.")
+				return
+			}
+			n = v
+		}
+		preview, err := b.svc.GetJobLogPreview(n)
+		if err != nil {
+			log.Println("GetJobLogPreview err:", err)
+			b.send(chatID, err.Error())
+			return
+		}
+		b.sendJobLogText(chatID, preview)
 		return
 	}
 
@@ -333,6 +371,26 @@ func (b *Bot) send(chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	if _, err := b.api.Send(msg); err != nil {
 		log.Println("send msg err:", err)
+	}
+}
+
+// telegramMaxMessageRunes — лимит длины текста сообщения в Telegram Bot API.
+const telegramMaxMessageRunes = 4096
+
+// sendJobLogText отправляет текст лога или .txt, если не помещается в лимит.
+func (b *Bot) sendJobLogText(chatID int64, text string) {
+	if utf8.RuneCountInString(text) <= telegramMaxMessageRunes {
+		b.send(chatID, text)
+		return
+	}
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FileBytes{
+		Name:  "job-log.txt",
+		Bytes: []byte(text),
+	})
+	doc.Caption = "Хвост job-лога (длинный вывод)"
+	if _, err := b.api.Send(doc); err != nil {
+		log.Println("send job-log document err:", err)
+		b.send(chatID, "Не удалось отправить лог файлом; попробуй меньше строк: /logs 20")
 	}
 }
 

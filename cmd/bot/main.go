@@ -74,6 +74,7 @@ func main() {
 		{Command: "reject_change", Description: "Отклонить смену email: /reject_change <id>"},
 		{Command: "list_changes", Description: "Показать все заявки на смену email"},
 		{Command: "cookie", Description: "Показать, сколько дней до истечения cookies Instagram"},
+		{Command: "logs", Description: "Хвост job-лога http-service: /logs [N строк]"},
 	}
 
 	scope := tgbotapi.NewBotCommandScopeChat(adminChatID)
@@ -83,6 +84,8 @@ func main() {
 		log.Println("set admin commands err:", err)
 	}
 
-	b := bot.New(botAPI, db, apiBase, adminChatID)
+	adminJobLogToken := os.Getenv("ADMIN_JOB_LOG_TOKEN")
+
+	b := bot.New(botAPI, db, apiBase, adminChatID, adminJobLogToken)
 	b.Run()
 }

@@ -95,6 +95,21 @@ func TestServer_HandleJobLog_OK(t *testing.T) {
 	}
 }
 
+func TestServer_HandleJobLog_NotFound(t *testing.T) {
+	discardLog := slog.New(slog.NewTextHandler(io.Discard, nil))
+	missingPath := filepath.Join(t.TempDir(), "nonexistent.log")
+	srv := New(nil, discardLog, nil, nil, nil, nil, nil, "", missingPath, "secret")
+	mux := http.NewServeMux()
+	srv.Routes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/job-log", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("статус: got %d, want 404", rr.Code)
+	}
+}
+
 func TestServer_HandleJobLog_XAdminToken(t *testing.T) {
 	discardLog := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tmp := t.TempDir()
