@@ -25,6 +25,9 @@ type VideoMeta struct {
 	Estimated1080pBytes int64  // оценка размера варианта до 1080p по пробе (0 если неизвестно или выбран 1080p)
 	SourceSizeBytes     int64  // размер после yt-dlp (вход ffmpeg)
 	TranscodeSizeBytes  int64  // размер после ffmpeg (выход)
+	ProbeDurationMs     int64  // chooseFormatBySize (yt-dlp --dump-single-json --no-download)
+	DownloadDurationMs  int64  // основной запуск yt-dlp (скачивание)
+	TranscodeDurationMs int64  // ffmpeg после yt-dlp
 }
 
 // FetchResult — результат Fetch: путь к файлу, очистка и опциональные метаданные видео.
@@ -397,7 +400,9 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (FetchResul
 	}
 
 	sourceBase := filepath.Join(dir, "source")
+	tProbe := time.Now()
 	formatStr, estimated1080pBytes := f.chooseFormatBySize(runCtx, url, dir, isInstagram)
+	probeMs := time.Since(tProbe).Milliseconds()
 	// Instagram: один лучший файл (best); фильтры best[height<=...] часто недоступны для reels → «Requested format is not available».
 	ytDlpFormat := formatStr
 	if isInstagram {
@@ -427,7 +432,9 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (FetchResul
 	cmd := exec.CommandContext(runCtx, "yt-dlp", args...)
 	cmd.Dir = dir
 
+	tDL := time.Now()
 	out, err := cmd.CombinedOutput()
+	dlMs := time.Since(tDL).Milliseconds()
 	if err != nil {
 		os.RemoveAll(dir)
 		return FetchResult{}, fmt.Errorf("yt-dlp: %w (output: %s)", err, string(out))
@@ -469,10 +476,12 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (FetchResul
 	}
 
 	normalizedPath := filepath.Join(dir, "video.mp4")
+	tFF := time.Now()
 	if err := transcodeForTelegramIOS(runCtx, foundPath, normalizedPath); err != nil {
 		os.RemoveAll(dir)
 		return FetchResult{}, err
 	}
+	ffMs := time.Since(tFF).Milliseconds()
 
 	transcodeSize := int64(0)
 	if st, err := os.Stat(normalizedPath); err == nil {
@@ -491,6 +500,9 @@ func (f *DefaultFetcher) fetchYtDlp(ctx context.Context, url string) (FetchResul
 			Estimated1080pBytes: estimated1080pBytes,
 			SourceSizeBytes:     foundSize,
 			TranscodeSizeBytes:  transcodeSize,
+			ProbeDurationMs:     probeMs,
+			DownloadDurationMs:  dlMs,
+			TranscodeDurationMs: ffMs,
 		},
 	}, nil
 }

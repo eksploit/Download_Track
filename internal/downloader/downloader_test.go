@@ -7,6 +7,36 @@ import (
 	"time"
 )
 
+func TestDaysLeftCeil_ExpiredOrZero(t *testing.T) {
+	now := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	exp := now
+	if got := DaysLeftCeil(now, exp); got != 0 {
+		t.Errorf("в момент истечения ожидалось 0, получено %d", got)
+	}
+	if got := DaysLeftCeil(now, now.Add(-time.Hour)); got != 0 {
+		t.Errorf("после истечения ожидалось 0, получено %d", got)
+	}
+}
+
+func TestDaysLeftCeil_CeilBoundaries(t *testing.T) {
+	now := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	// Чуть больше 24 ч → 2 «дня» по ceil
+	exp := now.Add(25*time.Hour + time.Minute)
+	if got := DaysLeftCeil(now, exp); got != 2 {
+		t.Errorf("25ч+ ожидалось 2, получено %d", got)
+	}
+	// Чуть меньше 48 ч → всё ещё 2
+	exp2 := now.Add(47 * time.Hour)
+	if got := DaysLeftCeil(now, exp2); got != 2 {
+		t.Errorf("47ч ожидалось 2, получено %d", got)
+	}
+	// Ровно 24 ч → 1
+	exp3 := now.Add(24 * time.Hour)
+	if got := DaysLeftCeil(now, exp3); got != 1 {
+		t.Errorf("24ч ожидалось 1, получено %d", got)
+	}
+}
+
 func TestCookieExpiry_NotFound(t *testing.T) {
 	_, err := CookieExpiry("/nonexistent/cookies.txt")
 	if err == nil {

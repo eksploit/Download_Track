@@ -10,6 +10,7 @@
 # Сборка
 bin/
 dist/
+/http-service
 
 # Go модули кэши (опционально)
 pkg/

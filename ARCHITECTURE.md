@@ -37,26 +37,26 @@
 
 - **`internal/httpserver`**  
   HTTP‑слой:
-  - маршруты `/health` и `/send`;
+  - маршруты `/health`, `/send`, `/cookie-status`; при непустых **`ADMIN_JOB_LOG_TOKEN`** и **`jobLogReadPath`** — **`GET /job-log`** (хвост NDJSON через **`internal/joblog.TailEntries`**, авторизация Bearer / **`X-Admin-Token`**);
   - валидация входящего запроса;
   - поиск пользователя по `api_key` в БД;
   - выбор реализации доставки по полю `mode`.
 
 - **`internal/downloader`**  
   Слой скачивания по URL:
-  - `Fetch(ctx, url)` возвращает `FetchResult` (путь, `Cleanup`, опционально `VideoMeta` для видео); при видео сервер пишет в jobLog строку `video fetch` с url, оценкой по пробе, форматом и размерами;
+  - `Fetch(ctx, url)` возвращает `FetchResult` (путь, `Cleanup`, опционально `VideoMeta` для видео); при видео сервер пишет в jobLog JSON-событие **`video_pipeline`** (url, оценка по пробе, формат, размеры, `probe_ms` / `ytdlp_ms` / `ffmpeg_ms`);
   - для обычных URL — HTTP GET во временный файл;
   - для YouTube/Instagram — yt-dlp (на загрузку одного файла отводится до 10 минут; если за это время загрузка не завершилась, она отменяется), затем нормализация ffmpeg в MP4 для корректного воспроизведения в Telegram iOS.
   - **Ограничение разрешения по размеру**: перед скачиванием вызывается yt-dlp `--dump-single-json` (без загрузки); по списку форматов оценивается размер варианта «лучшее видео до 1080p + лучшее аудио». Если суммарный размер ≤100 МБ — используется формат до 1080p, иначе до 720p (`chooseFormatBySize`). Так снижается нагрузка на ffmpeg и риск таймаута на слабом CPU. Для **Instagram** в yt-dlp передаётся формат `best` (без фильтра по разрешению), так как раздельные потоки и фильтры по height там часто недоступны («Requested format is not available»).
   - **Нагрузка на CPU**: перекодирование тяжёлого видео (4K, 60 fps, AV1) на одном ядре может идти в 5–10 раз медленнее реального времени (например, speed=0.16× и ~28 минут на ролик 4:39). Для более высокого качества без таймаутов нужен более мощный процессор или увеличение таймаута.
-  - Опционально для Instagram: путь к файлу cookies (`CookiesPath`, задаётся через `YTDLP_COOKIES_PATH`). Для ссылок на Instagram yt-dlp вызывается с `--cookies`; поддерживаются форматы Netscape и JSON (конвертация в `cookiesPathForYtDlp`). Функция **`CookieExpiry(path)`** возвращает минимальную дату истечения по файлу cookies (Netscape или JSON); используется для проверки срока и уведомлений админу.
+  - Опционально для Instagram: путь к файлу cookies (`CookiesPath`, задаётся через `YTDLP_COOKIES_PATH`). Для ссылок на Instagram yt-dlp вызывается с `--cookies`; поддерживаются форматы Netscape и JSON (конвертация в `cookiesPathForYtDlp`). Функция **`CookieExpiry(path)`** возвращает минимальную дату истечения по файлу cookies (Netscape или JSON); используется для проверки срока и уведомлений админу. Функция **`DaysLeftCeil(now, expiry)`** — число суток до момента `expiry` относительно `now`: длительность до истечения делится на 24 часа и округляется **вверх** (`ceil`); если срок уже наступил или прошёл — `0`. Используется в `GET /cookie-status` и в `internal/adminnotify` для согласованности с текстами уведомлений.
   - Минимальный интервал между стартами загрузок (`InstagramMinInterval`) и пауза `--sleep-interval` (`YtDlpSleepInterval`) снижают риск rate limit.
 
 - **`internal/adminnotify`**  
   Уведомления администратору в Telegram (cookies, ошибки Instagram):
-  - **`Notifier`** — отправка текстового сообщения в чат админа через Bot API (POST sendMessage). Создаётся через `New(token, apiBase, adminChatID)`; при пустом token или adminChatID возвращается nil.
-  - **`CheckCookiesFileAtStartup(cookiesPath, notifier)`** — при старте http-service проверяет доступность файла cookies; при недоступности или ошибке парсинга отправляет админу сообщение.
-  - **`RunCookieExpiryCheck(cookiesPath, notifier, interval)`** — фоновый цикл (например раз в сутки): читает `CookieExpiry`, при первом попадании в пороги 7 / 3 / 1 день до истечения отправляет соответствующее уведомление (каждый порог — один раз).
+  - **`Notifier`** — отправка текстового сообщения в чат админа через Bot API (POST sendMessage). Создаётся через `New(token, apiBase, adminChatID)`; при пустом token или adminChatID возвращается nil. Метод **`NotifyAdmin(msg string) bool`** возвращает `true` только при HTTP 200 и теле `{"ok":true}`; ошибки пишутся в стандартный лог.
+  - **`CheckCookiesFileAtStartup(cookiesPath, notifier)`** — при старте http-service проверяет доступность файла cookies; при недоступности или ошибке парсинга отправляет админу сообщение (с теми же повторами, что и фоновый цикл).
+  - **`RunCookieExpiryCheck(cookiesPath, notifier, interval)`** — фоновый цикл: **первая итерация выполняется сразу** после запуска, затем с заданным интервалом (в `cmd/http-service` — 24 ч). Читает `CookieExpiry` и **`DaysLeftCeil`**: при **истёкших** cookies — одно сообщение на дату минимального expiry; при остатке **≤7 / ≤3 / ≤1** суток — напоминания с **фактическим** `N` в тексте и склонением (`formatDaysRu`). Флаги «уже отправлено» для порогов и для истечения выставляются **только после успешного** `NotifyAdmin`; при неудаче — до трёх попыток с паузами 2 с и 5 с (`notifyWithRetry`). Интерфейс **`httpserver.AdminNotifier`** объявляет `NotifyAdmin(msg string) bool` (для ошибки Instagram возвращаемое значение может игнорироваться).
 
 - **`internal/delivery`**  
   Слой доставки файлов:
@@ -64,6 +64,9 @@
   - `email.go` — реализация `EmailDelivery` через SMTP;
   - `telegram.go` — реализация `TelegramDelivery` через локальный Telegram Bot API;
   - `multi.go` — `MultiDelivery`, агрегирующая email и Telegram‑доставку.
+
+- **`internal/joblog`**  
+  Разбор **NDJSON** job-лога (путь задаётся **`JOB_LOG_PATH`**, по умолчанию как **`/logs/send.log`**): **`TailEntries(path, maxLines)`** возвращает **`TailResult`** с последними непустыми строками, каждая успешно распарсенная — **`ParsedLine`** с **`Fields map[string]any`**; **`ParseErrors`** — число строк с невалидным JSON; **`Truncated`** — если **`maxLines`** превышал **`MaxLinesLimit` (100)** (фактически читается не больше лимита). Чтение с **конца файла** ограниченным чанком; при чтении не с начала файла первая строка в чанке отбрасывается как потенциально обрезанная. Зависимости — только стандартная библиотека. В **http-service** используется обработчиком **`GET /job-log`**, чтобы отдавать последние события по сети без монтирования каталога логов в контейнер бота (секрет **`ADMIN_JOB_LOG_TOKEN`**).
 
 ---
 
@@ -146,31 +149,35 @@
   - `TELEGRAM_API_BASE` — базовый URL локального Telegram Bot API (по умолчанию `http://telegram-bot-api:8081`);
   - `ADMIN_CHAT_ID` — при заданном вместе с `TELEGRAM_TOKEN` включаются уведомления админу о cookies и ошибках Instagram;
   - `YTDLP_COOKIES_PATH` — необязательный путь к файлу cookies для Instagram (внутри контейнера); используется также для проверки срока и endpoint `/cookie-status`;
+  - `JOB_LOG_PATH` — путь к NDJSON job-логу (по умолчанию `/logs/send.log`); тот же путь передаётся в `httpserver` для **`GET /job-log`**;
+  - `ADMIN_JOB_LOG_TOKEN` — если непустой, регистрируется **`GET /job-log`** с проверкой Bearer / `X-Admin-Token`; если пустой — маршрут не регистрируется;
   - `INSTAGRAM_MIN_INTERVAL_SECONDS`, `YTDLP_SLEEP_INTERVAL_SECONDS` — ограничение частоты загрузок с Instagram (интервал между стартами и пауза перед началом).
 - Инициализирует:
   - подключение к БД;
-  - файловый логгер в `/logs/send.log`;
+  - `*slog.Logger` с JSON handler на файл по **`JOB_LOG_PATH`** (NDJSON);
   - `EmailDelivery` с конфигурацией SMTP;
   - `TelegramDelivery` (если задан `TELEGRAM_TOKEN`);
   - `MultiDelivery` для режима `both`;
-  - при наличии `TELEGRAM_TOKEN` и `ADMIN_CHAT_ID` — `adminnotify.Notifier`; при заданном `YTDLP_COOKIES_PATH` вызывает `CheckCookiesFileAtStartup` и запускает горутину `RunCookieExpiryCheck` (интервал 24 ч).
-- Создаёт `httpserver.Server` (с опциональным `AdminNotifier` и путём к cookies), регистрирует маршруты и запускает `http.Server` на `:8080`.
+  - при наличии `TELEGRAM_TOKEN` и `ADMIN_CHAT_ID` — `adminnotify.Notifier`; при заданном `YTDLP_COOKIES_PATH` вызывает `CheckCookiesFileAtStartup` и запускает горутину `RunCookieExpiryCheck` (интервал 24 ч; **первый прогон проверки срока — сразу при старте**).
+- Создаёт `httpserver.Server` (с опциональным `AdminNotifier`, путём к cookies, путём к job-логу и токеном **`ADMIN_JOB_LOG_TOKEN`**), регистрирует маршруты и запускает `http.Server` на `:8080`.
 
 ### HTTP‑слой (`internal/httpserver/server.go`)
 
 `Server` содержит:
 
 - `db *sql.DB` — доступ к БД;
-- `jobLog *log.Logger` — логгер доставки;
+- `jobLog *slog.Logger` — job-лог доставки (NDJSON в `/logs/send.log`);
 - `fetcher downloader.Fetcher` — слой скачивания (обычный HTTP или yt-dlp);
 - `emailDelivery`, `telegramDelivery`, `bothDelivery` — реализации `Delivery`;
-- `adminNotifier AdminNotifier` (опционально) — уведомление админу в Telegram; при ошибке `Fetch` для URL с instagram.com и тексте ошибки «login» вызывается `NotifyAdmin` с просьбой обновить cookies;
-- `cookiesPath` — путь к файлу cookies (для `GET /cookie-status`).
+- `adminNotifier AdminNotifier` (опционально) — уведомление админу в Telegram; при ошибке `Fetch` для URL с instagram.com и тексте ошибки «login» вызывается `NotifyAdmin` (возвращает `bool`, успех не обязателен для обработчика);
+- `cookiesPath` — путь к файлу cookies (для `GET /cookie-status`);
+- `jobLogReadPath`, `adminJobLogToken` — при **обоих** непустых регистрируется **`GET /job-log`**: хвост файла job-лога через `joblog.TailEntries`, JSON с полями `entries`, `truncated`, `parse_errors`; **401** при отсутствии/неверном токене (**`Authorization: Bearer`** или **`X-Admin-Token`**); **404** если файл не найден; **503** при иной ошибке чтения.
 
 Роуты:
 
 - `GET /health` — простая проверка живости.
-- `GET /cookie-status` — статус cookies Instagram: при успешном парсинге — JSON с датой истечения и количеством дней до истечения; при недоступном файле или ошибке парсинга — соответствующий признак/сообщение. Используется ботом для команды `/cookie`.
+- `GET /cookie-status` — статус cookies Instagram: при успешном парсинге — JSON с датой минимального истечения (`expiry`), **`days_left` по `DaysLeftCeil`** (согласовано с админ-уведомлениями), флаг `expired` если срок уже прошёл; при недоступном файле или ошибке парсинга — соответствующий признак/сообщение. Используется ботом для команды `/cookie`.
+- `GET /job-log` — (опционально, см. выше) последние строки NDJSON job-лога; query **`lines`** (по умолчанию 20).
 - `POST /send` — основной эндпоинт:
   - декодирует JSON `sendRequest { api_key, file_url, mode }`;
   - по `api_key` находит пользователя, его Telegram‑account и email;
@@ -178,7 +185,8 @@
     - `email` → `emailDelivery`;
     - `telegram` → `telegramDelivery`;
     - `both` → `bothDelivery`.
-  - скачивает URL через `fetcher.Fetch(ctx, file_url)` → `result` (Path, Cleanup, VideoMeta); при `result.VideoMeta != nil` логирует в jobLog строку `video fetch` (url, estimated_1080p_bytes, format, downloaded_bytes, transcoded_bytes);
+  - для `POST /send` кладёт в контекст **`request_id`** (`internal/requestid`) и передаёт `ctx` в `fetcher.Fetch` и `SendFile`;
+  - скачивает URL через `fetcher.Fetch(ctx, file_url)` → `result` (Path, Cleanup, VideoMeta); при `result.VideoMeta != nil` логирует в jobLog JSON-событие **`video_pipeline`** (в т.ч. `probe_ms`, `ytdlp_ms`, `ffmpeg_ms`, размеры и формат);
   - `defer result.Cleanup()` удаляет временный файл после доставки;
   - формирует `delivery.User` и вызывает `SendFile(ctx, user, result.Path)`.
   - при ошибках отдаёт соответствующие HTTP‑коды (`401`, `400`, `500`, `502`).
@@ -198,8 +206,7 @@
   - чтение вложения из локального файла по пути `src`;
   - построение MIME‑письма с вложением (через `github.com/scorredoira/email`);
   - отправку письма через SMTP (с поддержкой `STARTTLS`).
-- Логирует статусы:
-  - `received`, `downloading`, `downloaded`, `send_error`, `sent` с указанием `user_id`, `username`, `mode`, размера файла и т.д.
+- Логирует в job-лог (slog JSON) события `delivery` / `channel=email` со стадиями вроде `received`, `downloading`, `downloaded`, `send_error`, `sent`; поля включают `request_id` из контекста, `user_id`, `username`, `mode`, размер и т.д.
 
 ### Telegram‑доставка (`TelegramDelivery`, `telegram.go`)
 
@@ -208,7 +215,7 @@
     - для видео — `sendVideo` (встроенный плеер в чате), иначе `sendDocument`;
     - дополнительно выставляются `supports_streaming`, `width/height/duration` (через ffprobe) и `thumb` (JPEG‑превью через ffmpeg) для лучшей совместимости iOS.
 - Использует локальный Telegram Bot API контейнер, который уже инкапсулирует MTProto‑взаимодействие с Telegram.
-- Логирует статусы `request`, `download_error`, `downloaded`, `api_error`, `sent`.
+- Логирует события `delivery` / `channel=telegram` со стадиями `request`, `download_error`, `downloaded`, `api_error`, `sent` и др.
 
 ### Совмещённая доставка (`MultiDelivery`, `multi.go`)
 
@@ -270,7 +277,7 @@ PostgreSQL используется минимум для следующих с�
 4. Дальше реализации delivery используют **путь к локальному файлу**:
    - для email — формируется и отправляется письмо с вложением;
    - для Telegram — файл отправляется в чат через локальный Telegram Bot API (sendVideo/sendDocument).
-5. Результат (успех/ошибка) логируется в `/logs/send.log`.
+5. Результат (успех/ошибка) логируется в `/logs/send.log` (NDJSON; см. `README.md`, `Download_Track.md`).
 
 ---
 
@@ -284,7 +291,11 @@ PostgreSQL используется минимум для следующих с�
 - контейнер с `telegram-bot-api` (локальный Bot API);
 - внешний/внутренний SMTP‑сервер.
 
-Все настройки сервисов передаются через переменные окружения, подробно описанные в `README.md`.
+Все настройки сервисов передаются через переменные окружения, подробно описанные в `README.md`. В `docker-compose.yml` в окружение `http-service` прокидываются те же `TELEGRAM_TOKEN`, `TELEGRAM_API_BASE` и `ADMIN_CHAT_ID`, что и у `bot` (значения из общего `.env`); также **`JOB_LOG_PATH`** (по умолчанию `/logs/send.log`) и **`ADMIN_JOB_LOG_TOKEN`** (для **`GET /job-log`**; у `bot` — то же значение, если понадобится вызывать эндпоинт из бота).
+
+### Поток: хвост job-лога по HTTP
+
+Клиент с секретом (**админ или бот** в Docker-сети) вызывает **`GET http-service:8080/job-log?lines=N`** с заголовком **`Authorization: Bearer`** или **`X-Admin-Token`**. **http-service** не открывает каталог логов наружу как статику: он читает файл по **`JOB_LOG_PATH`** через **`internal/joblog`**, возвращает JSON. Контейнер **bot** к **`./http-logs` не монтируется** — доступ к логам только через этот API (при настроенном токене).
 
 ---
 
@@ -294,9 +305,10 @@ Unit-тесты расположены в тех же пакетах, что и 
 
 - **`internal/bot/handlers_test.go`** — тесты для `extractFirstURL` (извлечение первой URL из сообщения по entities).
 - **`internal/delivery/multi_test.go`** — тесты для `MultiDelivery.SendFile` (оба канала nil, только email/telegram, ошибки и успех).
-- **`internal/httpserver/server_test.go`** — тест для обработчика `GET /health` (статус 200, тело `ok`).
-- **`internal/downloader/downloader_test.go`** — тесты для `CookieExpiry`: несуществующий файл, пустой файл, только пробелы, формат Netscape (минимальная дата, только комментарии), формат JSON (минимальная дата, пустой массив, отсутствие дат истечения), неверный формат.
-- **`internal/adminnotify/adminnotify_test.go`** — тесты для `New` (nil при пустом token или adminChatID, подстановка apiBase по умолчанию), `NotifyAdmin` (отправка POST с chat_id и text на мок-сервер, nil notifier не паникует), `CheckCookiesFileAtStartup` (уведомление при недоступном файле, уведомление при ошибке парсинга, nil notifier и пустой путь не вызывают запросов), `RunCookieExpiryCheck` (при пустом пути горутина сразу завершается).
+- **`internal/httpserver/server_test.go`** — тесты для `GET /health` (статус 200, тело `ok`); **`GET /job-log`** (маршрут не регистрируется без токена; 401 без заголовка; 200 с Bearer и с `X-Admin-Token`).
+- **`internal/downloader/downloader_test.go`** — тесты для `CookieExpiry`: несуществующий файл, пустой файл, только пробелы, формат Netscape (минимальная дата, только комментарии), формат JSON (минимальная дата, пустой массив, отсутствие дат истечения), неверный формат; тесты для **`DaysLeftCeil`** (истёкший срок, границы округления).
+- **`internal/adminnotify/adminnotify_test.go`** — тесты для `New` (nil при пустом token или adminChatID, подстановка apiBase по умолчанию), **`NotifyAdmin` (bool; POST на мок-сервер; ответы `ok:false` и не-200)**, `formatDaysRu`, `CheckCookiesFileAtStartup`, **`runCookieExpiryIteration` (ретраи, флаг только после успеха)**, `RunCookieExpiryCheck` (при пустом пути горутина сразу завершается).
+- **`internal/joblog/joblog_test.go`** — тесты для **`TailEntries`**: пустой файл; NDJSON с битой строкой; усечение **`maxLines`** сверх **`MaxLinesLimit`**; большой файл (последние записи); файл больше внутреннего чанка чтения (хвост и маркер в конце); **`maxLines` = 0**.
 - **`cmd/bot/main_test.go`** — проверка сборки пакета и доступности импорта `internal/bot` (символ `ErrAlreadyRegistered`).
 - **`cmd/http-service/main_test.go`** — проверка сборки пакета и доступности импорта `internal/httpserver` (тип `Server`).
 

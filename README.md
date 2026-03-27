@@ -12,9 +12,9 @@
   - **В этот чат** — файл отправляется напрямую в Telegram‑чат через локальный Telegram Bot API (поддержка файлов до 2 ГБ).
   - **И туда, и сюда** — файл доставляется одновременно на email и в Telegram‑чат.
 - Запрос смены email через `/change_email`, подтверждение/отклонение админом через `/approve_change` и `/reject_change`.
-- **Уведомления админу о cookies Instagram**: при заданных `TELEGRAM_TOKEN` и `ADMIN_CHAT_ID` http-service при старте проверяет доступность файла cookies (при недоступности или неверном формате шлёт сообщение в Telegram), по таймеру уведомляет за 7, 3 и 1 день до истечения; при ошибке загрузки с Instagram из-за логина — сообщение админу. В админ-чате команда `/cookie` — показать, сколько дней до истечения cookies.
+- **Уведомления админу о cookies Instagram**: при заданных `TELEGRAM_TOKEN` и `ADMIN_CHAT_ID` http-service при старте проверяет доступность файла cookies (при недоступности или неверном формате шлёт сообщение в Telegram; при сбое Telegram API — до трёх попыток с паузами). Фоновая проверка срока запускается **сразу после старта** и далее раз в сутки: при **истёкших** по минимальной дате cookies — одно уведомление на эту дату; при остатке **не больше 7, 3 и 1 дня** — отдельные напоминания с **фактическим** числом дней и склонением («1 день», «2 дня», «5 дней»); флаги «уже отправлено» ставятся только после **успешного** ответа Telegram (`{"ok":true}`). При ошибке загрузки с Instagram из-за логина — сообщение админу. В админ-чате команда `/cookie` и `GET /cookie-status` показывают ту же оценку остатка дней, что и уведомления (см. ниже).
 - Хранение пользователей и заявок в PostgreSQL.
-- Структурированные логи доставки с указанием режима (`mode=email/telegram/both`), статусов и размера файла.
+- Job-логи доставки в **NDJSON** (`/logs/send.log`): один JSON-объект на строку, поля `request_id`, канал доставки, этапы и для видео — длительности probe / yt-dlp / ffmpeg в миллисекундах.
 
 ## Стек
 
@@ -47,6 +47,7 @@
    - `ADMIN_CHAT_ID` — ваш Telegram ID (например, узнайте у [@userinfobot](https://t.me/userinfobot) или из логов бота при первом сообщении в админ-чат).
    - `TELEGRAM_API_ID` и `TELEGRAM_API_HASH` — на [my.telegram.org](https://my.telegram.org) → «API development tools» → создать приложение → скопировать api_id и api_hash.
    - Если не планируете скачивать видео с Instagram по ссылкам с «login required», в `docker-compose.yml` закомментируйте строку с томом `./cookies/instagram.txt` (иначе контейнер http-service не запустится без этого файла).
+   - Опционально: **`ADMIN_JOB_LOG_TOKEN`** — один и тот же длинный секрет в `.env` для контейнеров `http-service` и `bot` (compose уже прокидывает переменную). Тогда регистрируется защищённый **`GET /job-log`** (хвост NDJSON job-лога); пустое значение — маршрут не поднимается. Не свети токен в чатах, скриптах и публичных репозиториях.
 
 2. Запустить сервисы:
    ```bash
@@ -78,6 +79,18 @@
    ```
    Ожидается: ответ `200 OK` (тело может быть пустым или `ok`).
 
+   При настроенном `YTDLP_COOKIES_PATH` можно проверить расчёт срока cookies:
+   ```bash
+   curl -s http://localhost:8080/cookie-status | jq .
+   ```
+   Поля `expiry` и `days_left` должны быть согласованы с минимальной датой в файле cookies (см. раздел про Instagram: cookies).
+
+   Если в `.env` задан **`ADMIN_JOB_LOG_TOKEN`**, можно проверить хвост job-лога:
+   ```bash
+   curl -s -H "Authorization: Bearer $ADMIN_JOB_LOG_TOKEN" \
+     "http://localhost:8080/job-log?lines=10" | jq .
+   ```
+
 3. **Ручная проверка в Telegram**
    - Написать боту `/start` — должно прийти приветствие.
    - `/register ваш_email@example.com` — ответ «Готово! Теперь просто пришли ссылку на файл».
@@ -93,9 +106,10 @@
    Тесты расположены в `*_test.go` рядом с кодом:
    - **internal/bot/handlers_test.go** — `extractFirstURL` (извлечение первой URL из сообщения).
    - **internal/delivery/multi_test.go** — `MultiDelivery.SendFile` (режимы email/telegram/both, ошибки и успех).
-   - **internal/httpserver/server_test.go** — обработчик `GET /health` (статус 200, тело `ok`).
-   - **internal/downloader/downloader_test.go** — `CookieExpiry`: несуществующий/пустой файл, формат Netscape, JSON, неверный формат.
-   - **internal/adminnotify/adminnotify_test.go** — `New` (nil при пустых параметрах), `NotifyAdmin` (POST на мок-сервер), `CheckCookiesFileAtStartup` (недоступный файл, ошибка парсинга), `RunCookieExpiryCheck` (выход при пустом пути).
+   - **internal/httpserver/server_test.go** — обработчик `GET /health` (статус 200, тело `ok`); **`GET /job-log`** (маршрут только при токене и пути; 401 без авторизации; 200 с Bearer / `X-Admin-Token`).
+   - **internal/downloader/downloader_test.go** — `CookieExpiry`: несуществующий/пустой файл, формат Netscape, JSON, неверный формат; **`DaysLeftCeil`** (истёкший срок, границы округления вверх по суткам).
+  - **internal/logutil/truncate_test.go** — **`TruncateString`** (обрезка длинных строк для логов).
+   - **internal/adminnotify/adminnotify_test.go** — `New` (nil при пустых параметрах), **`NotifyAdmin` (bool, POST на мок-сервер, ответ `ok:false`/не-200)**, `formatDaysRu`, `CheckCookiesFileAtStartup`, **`runCookieExpiryIteration` (ретраи, флаг `sent7` только после успеха)**, `RunCookieExpiryCheck` (выход при пустом пути).
    - **cmd/bot/main_test.go**, **cmd/http-service/main_test.go** — проверка сборки пакетов и импортов.
 
 # Особенности доставки
@@ -104,7 +118,7 @@
 - **YouTube/Instagram**: для ссылок на видео (youtube.com, youtu.be, instagram.com) доставка выполняется только в Telegram‑чат. Обычные ссылки на файлы по-прежнему позволяют выбрать email, чат или оба варианта.
 - **Ограничение разрешения по размеру**: перед скачиванием сервис запрашивает у yt-dlp метаданные и оценивает размер варианта «до 1080p». Если он не больше 100 МБ — скачивается до 1080p; если больше — до 720p. Так снижается нагрузка на перекодирование (ffmpeg) и риск таймаута. Максимальный размер файла по-прежнему ограничен (в боте до 2 ГБ, в yt-dlp задаётся `--max-filesize`). Для **Instagram** используется формат `best` (один лучший файл без фильтра по разрешению), так как раздельные потоки «видео+аудио» и фильтры `best[height<=...]` там часто недоступны и приводят к «Requested format is not available».
 - **Нагрузка на CPU и качество**: перекодирование в MP4 (H.264) для Telegram выполняется на сервере. Более высокое разрешение и тяжёлые кодеки (например 4K, 60 fps, AV1) требуют значительно больше процессорного ресурса. Пример: ролик 4:39, 3840×2160 (4K), 60 fps, AV1 на одном ядре ~3 ГГц — ffmpeg даёт скорость около 0.16× от реального времени, то есть на полное перекодирование такого ролика потребовалось бы около 28 минут; при общем таймауте 10 минут процесс будет прерван. Поэтому ограничение 720p для крупных файлов и 1080p для небольших — разумный компромисс между качеством и стабильностью на слабом железе.
-- **Instagram: cookies**. По умолчанию том с cookies в docker-compose закомментирован; если он не нужен, не создавайте папку `cookies/`. yt-dlp для Instagram не поддерживает вход по паролю; при «login required» нужен файл cookies. Используйте отдельный технический аккаунт (**не личный** — возможны блокировки). В браузере войдите в аккаунт, экспортируйте cookies (Netscape или JSON — JSON конвертируется автоматически), сохраните в `cookies/instagram.txt`, задайте `YTDLP_COOKIES_PATH=/cookies/instagram.txt` в `.env`, раскомментируйте том в `docker-compose.yml` и перезапустите с `--force-recreate`. Папка `cookies/` в `.gitignore`.
+- **Instagram: cookies**. По умолчанию том с cookies в docker-compose закомментирован; если он не нужен, не создавайте папку `cookies/`. yt-dlp для Instagram не поддерживает вход по паролю; при «login required» нужен файл cookies. Используйте отдельный технический аккаунт (**не личный** — возможны блокировки). В браузере войдите в аккаунт, экспортируйте cookies (Netscape или JSON — JSON конвертируется автоматически), сохраните в `cookies/instagram.txt`, задайте `YTDLP_COOKIES_PATH=/cookies/instagram.txt` в `.env`, раскомментируйте том в `docker-compose.yml` и перезапустите с `--force-recreate`. Папка `cookies/` в `.gitignore`. **Срок в API и в боте** (`days_left` в `GET /cookie-status` и `/cookie`) — это не «дней с момента экспорта», а **минимальная дата истечения среди записей в файле**, переведённая в число суток до неё с округлением **вверх** (`DaysLeftCeil`: доля суток от текущего момента до expiry делится на 24 ч и округляется через `ceil`). Сообщения админу о сроке используют ту же логику.
 - **Ограничение частоты запросов (rate limit)**: Instagram может временно блокировать загрузки при нескольких запросах подряд. Чтобы снизить риск, задайте `INSTAGRAM_MIN_INTERVAL_SECONDS` (минимальный интервал между стартами загрузок, например 60) и/или `YTDLP_SLEEP_INTERVAL_SECONDS` (пауза перед началом загрузки в yt-dlp). При ошибке «login required» или «rate-limit» подождите 5–10 минут и повторите.
 - При выборе доставки на email бот может предупредить, если у пользователя Gmail и расширение файла относится к блокируемым (например, `.exe`, `.bat`, `.js` и др.) — в этом случае отправка на почту не выполняется, и предлагается использовать доставку в чат.
 
@@ -117,6 +131,7 @@
 | `TELEGRAM_TOKEN` | да | Токен бота от [@BotFather](https://t.me/BotFather) |
 | `ADMIN_CHAT_ID` | да | Telegram ID администратора (подтверждение смены email; тот же используется http-service для уведомлений о cookies и ошибках Instagram) |
 | `API_BASE` | нет | Адрес HTTP‑сервиса (по умолчанию `http://http-service:8080`) |
+| `ADMIN_JOB_LOG_TOKEN` | нет | Общий секрет с http-service для **`GET /job-log`** (если будешь вызывать хвост лога из бота или вручную). Должен совпадать с тем же значением в окружении http-service. Без токена маршрут `/job-log` в http-service не поднимается. |
 
 ---
 
@@ -161,6 +176,11 @@
 
 | Переменная | Обязательная | Описание |
 |-------------|---------------|-----------|
+| `TELEGRAM_TOKEN` | нет | Как у бота из `.env`: доставка в Telegram и (вместе с `ADMIN_CHAT_ID`) админ-уведомления о cookies/Instagram. |
+| `TELEGRAM_API_BASE` | нет | Как у бота из `.env`: локальный Telegram Bot API (по умолчанию `http://telegram-bot-api:8081`). |
+| `ADMIN_CHAT_ID` | нет | Как у бота из `.env`: админ-чат для уведомлений http-service; без пары с `TELEGRAM_TOKEN` нотификатор не создаётся. |
+| `JOB_LOG_PATH` | нет | Путь к NDJSON job-логу **внутри контейнера** (запись slog и чтение для **`GET /job-log`**). По умолчанию **`/logs/send.log`** (в compose обычно том `./http-logs:/logs`). |
+| `ADMIN_JOB_LOG_TOKEN` | нет | Секрет для **`GET /job-log`**. Если пусто — эндпоинт **не регистрируется** (защита от открытого доступа). Задай непустое значение в `.env` и укажи то же в боте, если нужен программный доступ к хвосту лога. |
 | `YTDLP_COOKIES_PATH` | нет | Путь к файлу cookies для Instagram (Netscape или JSON). Для yt-dlp при загрузке с Instagram; также для проверки срока cookies, уведомлений за 7/3/1 день до истечения и ответа на команду `/cookie`. Путь — внутри контейнера (смонтировать том в docker-compose). |
 | `INSTAGRAM_MIN_INTERVAL_SECONDS` | нет | Минимальный интервал (сек) между стартами загрузок с Instagram; 0 = отключено. Снижает риск rate limit и блокировки. |
 | `YTDLP_SLEEP_INTERVAL_SECONDS` | нет | Пауза (сек) перед началом загрузки в yt-dlp (`--sleep-interval`), только для Instagram; 0 = не добавлять. |
@@ -188,7 +208,7 @@
 | `/list_changes` | Показать все активные заявки |
 | `/cookie` | Показать, сколько дней до истечения cookies Instagram (запрос к http-service) |
 
-В админ-чат также приходят уведомления о новых регистрациях (после `/register`) и от http-service: о недоступности файла cookies, об ошибке формата cookies, за 7/3/1 день до истечения cookies, при ошибке загрузки с Instagram из-за логина. Эти команды доступны только в административном чате (`ADMIN_CHAT_ID`).
+В админ-чат также приходят уведомления о новых регистрациях (после `/register`) и от http-service: о недоступности файла cookies, об ошибке формата cookies, **об истечении cookies** (минимальная дата уже в прошлом), **до истечения** с текстом вида «Остаётся N …» при первом попадании в пороги ≤7, ≤3 и ≤1 суток (N — фактический остаток по той же формуле, что и `/cookie-status`), при ошибке загрузки с Instagram из-за логина. Сообщение не гарантируется при каждом рестарте: если файл в порядке и до истечения больше 7 суток по расчёту, уведомление не шлётся. Эти команды доступны только в административном чате (`ADMIN_CHAT_ID`).
 
 ---
 
@@ -197,7 +217,8 @@
 HTTP‑сервис предоставляет эндпоинты:
 
 - `POST /send` — запрос на доставку файла пользователю.
-- `GET /cookie-status` — статус cookies Instagram (дата истечения, дни до истечения; при недоступном файле или ошибке парсинга — соответствующий ответ). Используется ботом для команды `/cookie`.
+- `GET /cookie-status` — статус cookies Instagram: при успешном парсинге — `expiry` (дата минимального срока в файле), `days_left` (**целое число суток** до этой даты с округлением вверх по 24‑часовым интервалам; совпадает с логикой админ-уведомлений), `expired` если срок уже прошёл; при недоступном файле или ошибке парсинга — соответствующий ответ. Используется ботом для команды `/cookie`.
+- `GET /job-log` — хвост job-лога в JSON (последние события NDJSON). Регистрируется **только** если заданы непустые **`ADMIN_JOB_LOG_TOKEN`** и путь к файлу лога (см. `JOB_LOG_PATH`). Авторизация: заголовок **`Authorization: Bearer <токен>`** или **`X-Admin-Token: <токен>`** (тот же секрет, что в `.env`). Параметр запроса **`lines`** — сколько последних непустых строк разобрать (по умолчанию 20, верхняя граница на стороне сервера — 100, см. `internal/joblog`). Ответ: `entries` (массив объектов), `truncated`, `parse_errors`. Коды: **401** без токена или при неверном токене; **404** если файл лога не найден; **503** при иной ошибке чтения. Порт `8080` смотрит наружу — **не светить токен** в логах и в публичных скриптах; доступ только для админа/бота по сети.
 
 Тело запроса (JSON):
 
@@ -217,32 +238,39 @@ HTTP‑сервис предоставляет эндпоинты:
 
 # Логи
 
-HTTP‑сервис пишет структурированные логи в `/logs/send.log` (внутри контейнера). На хосте этот путь обычно монтируется в локальный каталог (например, `./http-logs:/logs` в `docker-compose.yml`). Для видео (YouTube/Instagram) дополнительно пишется строка `video fetch` с исходной ссылкой, оценкой размера по пробе, выбранным форматом (1080p/720p) и размерами после yt-dlp и ffmpeg (подробнее — в `Download_Track.md`).
+HTTP‑сервис пишет job-логи в файл по пути **`JOB_LOG_PATH`** (по умолчанию **`/logs/send.log`** внутри контейнера) в формате **NDJSON** (newline-delimited JSON): **каждая строка — один JSON-объект**. Запись через стандартный пакет `log/slog` с `JSONHandler`. На хосте путь обычно монтируется в локальный каталог (например, `./http-logs:/logs` в `docker-compose.yml`). Чтение хвоста для админ-инструментов — **`GET /job-log`** (см. раздел HTTP API и переменные `JOB_LOG_PATH`, `ADMIN_JOB_LOG_TOKEN`).
+
+Общие поля: время и уровень добавляет handler; в теле сообщения — `msg` (краткое описание), для цепочки `POST /send` — **`request_id`** (случайный hex, 32 символа), передаваемый в контексте в `Fetch` и `SendFile`. Поле **`url`** в доставке — обрезанная до 256 символов ссылка или путь (суффикс `...` при обрезке).
+
+- Событие **`video_pipeline`** (`event=video_pipeline`, `msg` «video pipeline»): для YouTube/Instagram после успешного `Fetch` — исходный `file_url`, `format`, `estimated_1080p_bytes`, `downloaded_bytes` / `transcoded_bytes`, **`probe_ms`**, **`ytdlp_ms`**, **`ffmpeg_ms`** (длительности этапов в миллисекундах).
+- События доставки (**`event=delivery`**): `channel` (`email` / `telegram`), `stage` / `status` (например `received`, `downloading`, `sent`, ошибки), `user_id`, `mode`, при необходимости `size`, `email`, `telegram_id`.
+
+Разбор построчно: `while IFS= read -r line; do [ -n "$line" ] && jq . <<< "$line"; done < send.log` или фильтры вроде `grep '"event":"video_pipeline"' send.log | jq .`.
+
+В коде Go хвост NDJSON и разбор строк делает пакет **`internal/joblog`** (`TailEntries`, лимит строк **`MaxLinesLimit`**; подробности — в **`ARCHITECTURE.md`**).
 
 # Примеры логов доставки
 
-## Пример для email‑доставки
+## Пример для email‑доставки (фрагменты полей)
 
-```text
-user_id=1 username=user url=https://... mode=email status=received
-user_id=1 username=user url=https://... mode=email status=downloading
-user_id=1 username=user url=https://... mode=email status=downloaded size=1351081
-user_id=1 username=user email=user@example.com url=https://... mode=email status=sent size=1351081
+Каждая строка — валидный JSON. У email `channel` равен `email`, у этапов меняются `stage` и `status`.
+
+```json
+{"time":"2026-03-27T12:00:00.0+00:00","level":"INFO","msg":"email delivery","event":"delivery","channel":"email","stage":"received","request_id":"a1b2c3d4e5f6789012345678abcdef01","user_id":1,"username":"user","url":"https://example.com/file.zip","mode":"email","status":"received"}
 ```
+
 ## Пример для Telegram‑доставки
 
-```text
-telegram delivery: user_id=1 username=user telegram_id=123456 url=https://... mode=telegram status=request
-telegram delivery: user_id=1 username=user telegram_id=123456 url=https://... mode=telegram status=sent
+```json
+{"time":"2026-03-27T12:00:01.0+00:00","level":"INFO","msg":"telegram delivery","event":"delivery","channel":"telegram","stage":"sent","request_id":"a1b2c3d4e5f6789012345678abcdef01","user_id":1,"username":"user","telegram_id":123456,"url":"/tmp/ytdlp-xxx/video.mp4","mode":"telegram","status":"sent","size":36645630}
 ```
 
 ## Пример для доставки видео (YouTube/Instagram) в Telegram
 
-```text
-video fetch: url=https://youtu.be/... estimated_1080p_bytes=156000000 format=720p downloaded_bytes=13971690 transcoded_bytes=36645630
-telegram delivery: user_id=1 username=user telegram_id=123456 url=/tmp/ytdlp-.../video.mp4 mode=telegram status=request
-telegram delivery: user_id=1 username=user telegram_id=123456 url=/tmp/ytdlp-.../video.mp4 mode=telegram status=downloaded size=36645630
-telegram delivery: user_id=1 username=user telegram_id=123456 url=/tmp/ytdlp-.../video.mp4 mode=telegram status=sent size=36645630
+Сначала одна запись пайплайна видео, затем записи доставки с тем же `request_id`:
+
+```json
+{"time":"2026-03-27T12:00:00.0+00:00","level":"INFO","msg":"video pipeline","event":"video_pipeline","request_id":"a1b2c3d4e5f6789012345678abcdef01","user_id":1,"mode":"telegram","file_url":"https://youtu.be/...","format":"720p","estimated_1080p_bytes":156000000,"downloaded_bytes":13971690,"transcoded_bytes":36645630,"probe_ms":1200,"ytdlp_ms":45000,"ffmpeg_ms":180000}
 ```
 
 ## Схема работы 
@@ -303,7 +331,8 @@ HTTP‑сервис (http-service)
     │      - email      → EmailDelivery
     │      - telegram   → TelegramDelivery
     │      - both       → MultiDelivery (email + telegram)
-    │ 4.4. downloader.Fetch(file_url) → локальный временный файл (HTTP или yt-dlp + ffmpeg для YouTube/Instagram)
+    │ 4.4. downloader.Fetch(ctx, file_url) → локальный временный файл (HTTP или yt-dlp + ffmpeg для YouTube/Instagram)
+    │ 4.5. В job-лог (NDJSON): при видео — событие video_pipeline (тайминги probe/ytdlp/ffmpeg); далее delivery с тем же request_id
     ▼
 
 Слой доставки (delivery)
@@ -313,7 +342,7 @@ HTTP‑сервис (http-service)
     │    │ 5.1. Читает локальный файл (путь от downloader)
     │    │ 5.2. Формирует письмо с вложением
     │    │ 5.3. Отправляет через SMTP (SMTP_HOST/PORT/USER/PASS/FROM)
-    │    │ 5.4. Пишет логи в /logs/send.log
+    │    │ 5.4. Пишет NDJSON job-лог в /logs/send.log (slog, request_id из контекста)
     │
     ├─ TelegramDelivery
     │    │
@@ -323,7 +352,7 @@ HTTP‑сервис (http-service)
     │    │      - chat_id = telegram_id
     │    │      - video|document = бинарное содержимое файла
     │    │ 5.3. Локальный telegram-bot-api отправляет файл в Telegram
-    │    │ 5.4. Пишет логи в /logs/send.log
+    │    │ 5.4. Пишет NDJSON job-лог в /logs/send.log (slog, request_id из контекста)
     │
     └─ MultiDelivery
          │

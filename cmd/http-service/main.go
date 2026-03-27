@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -30,13 +31,18 @@ func main() {
 		log.Println("warning: db ping error:", err)
 	}
 
-	f, err := os.OpenFile("/logs/send.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	jobLogPath := os.Getenv("JOB_LOG_PATH")
+	if jobLogPath == "" {
+		jobLogPath = "/logs/send.log"
+	}
+	f, err := os.OpenFile(jobLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Fatal("open send.log:", err)
+		log.Fatal("open job log:", jobLogPath, err)
 	}
 	defer f.Close()
 
-	jobLogger := log.New(f, "", log.LstdFlags)
+	jobLogger := slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	adminJobLogToken := os.Getenv("ADMIN_JOB_LOG_TOKEN")
 
 	smtpHost := os.Getenv("SMTP_HOST")
 	smtpPort := os.Getenv("SMTP_PORT")
@@ -120,7 +126,7 @@ func main() {
 	if notifier != nil {
 		adminNotifier = notifier
 	}
-	srv := httpserver.New(db, jobLogger, fetcher, emailDelivery, telegramDelivery, bothDelivery, adminNotifier, cookiesPath)
+	srv := httpserver.New(db, jobLogger, fetcher, emailDelivery, telegramDelivery, bothDelivery, adminNotifier, cookiesPath, jobLogPath, adminJobLogToken)
 
 	mux := http.NewServeMux()
 	srv.Routes(mux)

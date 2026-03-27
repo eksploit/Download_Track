@@ -2,6 +2,7 @@ package adminnotify
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -44,7 +45,9 @@ func TestNew_DefaultAPIBase(t *testing.T) {
 	}))
 	defer server.Close()
 	n2 := New("tok", server.URL, "456")
-	n2.NotifyAdmin("test")
+	if ok := n2.NotifyAdmin("test"); !ok {
+		t.Error("ожидался успешный NotifyAdmin")
+	}
 	if received.ChatID != "456" || received.Text != "test" {
 		t.Errorf("ожидались chat_id=456, text=test; получено chat_id=%q, text=%q", received.ChatID, received.Text)
 	}
@@ -74,7 +77,9 @@ func TestNotifyAdmin_SendsRequest(t *testing.T) {
 	}))
 	defer server.Close()
 	n := New("test-token", server.URL, "admin123")
-	n.NotifyAdmin("Проверка уведомления")
+	if ok := n.NotifyAdmin("Проверка уведомления"); !ok {
+		t.Fatal("ожидался успешный NotifyAdmin")
+	}
 	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
@@ -86,7 +91,54 @@ func TestNotifyAdmin_SendsRequest(t *testing.T) {
 // TestNotifyAdmin_NilNoPanic проверяет, что вызов NotifyAdmin у nil notifier не паникует.
 func TestNotifyAdmin_NilNoPanic(t *testing.T) {
 	var n *Notifier
-	n.NotifyAdmin("любой текст")
+	if n.NotifyAdmin("любой текст") {
+		t.Error("у nil notifier ожидался false")
+	}
+}
+
+// TestNotifyAdmin_FalseWhenNotOK проверяет, что при ok=false в JSON возвращается false.
+func TestNotifyAdmin_FalseWhenNotOK(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":false}`))
+	}))
+	defer server.Close()
+	n := New("t", server.URL, "1")
+	if n.NotifyAdmin("x") {
+		t.Fatal("ожидался false при ok=false")
+	}
+}
+
+// TestNotifyAdmin_FalseWhenBadStatus проверяет ответ не 200.
+func TestNotifyAdmin_FalseWhenBadStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	n := New("t", server.URL, "1")
+	if n.NotifyAdmin("x") {
+		t.Fatal("ожидался false при 500")
+	}
+}
+
+func TestFormatDaysRu(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{1, "1 день"},
+		{2, "2 дня"},
+		{5, "5 дней"},
+		{11, "11 дней"},
+		{21, "21 день"},
+		{22, "22 дня"},
+		{25, "25 дней"},
+	}
+	for _, tc := range cases {
+		if got := formatDaysRu(tc.n); got != tc.want {
+			t.Errorf("formatDaysRu(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
 }
 
 // TestCheckCookiesFileAtStartup_UnavailableFile вызывает уведомление при недоступном файле.
@@ -160,6 +212,75 @@ func TestCheckCookiesFileAtStartup_EmptyPath(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if called {
 		t.Error("при пустом пути не должно быть запроса к API")
+	}
+}
+
+// TestRunCookieExpiryIteration_NoSentOnFullFailure проверяет, что флаги не ставятся, если все попытки отправки провалились.
+func TestRunCookieExpiryIteration_NoSentOnFullFailure(t *testing.T) {
+	oldSleep := sleepForRetry
+	sleepForRetry = func(time.Duration) {}
+	defer func() { sleepForRetry = oldSleep }()
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.txt")
+	exp := time.Now().Add(5 * 24 * time.Hour)
+	content := "# Netscape\n" + fmt.Sprintf(".instagram.com\tTRUE\t/\tTRUE\t%d\tc\tv\n", exp.Unix())
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	n := New("tok", server.URL, "1")
+	state := &stateCookieCheck{}
+	runCookieExpiryIteration(path, n, state)
+	if attempts != 3 {
+		t.Fatalf("ожидалось 3 HTTP-попытки, получено %d", attempts)
+	}
+	if state.sent7 {
+		t.Fatal("sent7 не должен выставляться при полном провале")
+	}
+}
+
+// TestRunCookieExpiryIteration_Sent7AfterThirdAttempt проверяет успех после двух неудачных ответов API.
+func TestRunCookieExpiryIteration_Sent7AfterThirdAttempt(t *testing.T) {
+	oldSleep := sleepForRetry
+	sleepForRetry = func(time.Duration) {}
+	defer func() { sleepForRetry = oldSleep }()
+
+	nReq := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nReq++
+		if nReq < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.txt")
+	exp := time.Now().Add(5 * 24 * time.Hour)
+	content := "# Netscape\n" + fmt.Sprintf(".instagram.com\tTRUE\t/\tTRUE\t%d\tc\tv\n", exp.Unix())
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	n := New("tok", server.URL, "1")
+	state := &stateCookieCheck{}
+	runCookieExpiryIteration(path, n, state)
+	if nReq != 3 {
+		t.Fatalf("ожидалось 3 запроса, получено %d", nReq)
+	}
+	if !state.sent7 {
+		t.Fatal("ожидался sent7 после успешной 3-й попытки")
 	}
 }
 

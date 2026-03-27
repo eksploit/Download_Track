@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/mail"
@@ -16,6 +17,9 @@ import (
 	"time"
 
 	"github.com/scorredoira/email"
+
+	"download_track/internal/logutil"
+	"download_track/internal/requestid"
 )
 
 type SMTPConfig struct {
@@ -28,12 +32,12 @@ type SMTPConfig struct {
 
 type EmailDelivery struct {
 	DB         *sql.DB
-	Logger     *log.Logger
+	Logger     *slog.Logger
 	SMTP       SMTPConfig
 	HTTPClient *http.Client
 }
 
-func NewEmailDelivery(db *sql.DB, logger *log.Logger, cfg SMTPConfig) *EmailDelivery {
+func NewEmailDelivery(db *sql.DB, logger *slog.Logger, cfg SMTPConfig) *EmailDelivery {
 	return &EmailDelivery{
 		DB:     db,
 		Logger: logger,
@@ -49,24 +53,68 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, src string) err
 		return fmt.Errorf("smtp config incomplete")
 	}
 
-	d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=received\n", user.ID, user.Username, src, user.Mode)
+	ref := logutil.TruncateString(src, 256)
+	d.Logger.InfoContext(ctx, "email delivery",
+		slog.String("event", "delivery"),
+		slog.String("channel", "email"),
+		slog.String("stage", "received"),
+		slog.String("request_id", requestid.From(ctx)),
+		slog.Int("user_id", user.ID),
+		slog.String("username", user.Username),
+		slog.String("url", ref),
+		slog.String("mode", user.Mode),
+		slog.String("status", "received"),
+	)
 
 	var attachmentPath string
 	var size int64
 
 	if isURL(src) {
-		d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=downloading\n", user.ID, user.Username, src, user.Mode)
+		d.Logger.InfoContext(ctx, "email delivery",
+			slog.String("event", "delivery"),
+			slog.String("channel", "email"),
+			slog.String("stage", "downloading"),
+			slog.String("request_id", requestid.From(ctx)),
+			slog.Int("user_id", user.ID),
+			slog.String("username", user.Username),
+			slog.String("url", ref),
+			slog.String("mode", user.Mode),
+			slog.String("status", "downloading"),
+		)
 
 		getResp, err := d.HTTPClient.Get(src)
 		if err != nil {
 			log.Printf("get request err: %v\n", err)
-			d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=download_error stage=get error=%q\n", user.ID, user.Username, src, user.Mode, err.Error())
+			d.Logger.InfoContext(ctx, "email delivery",
+				slog.String("event", "delivery"),
+				slog.String("channel", "email"),
+				slog.String("stage", "download_error"),
+				slog.String("request_id", requestid.From(ctx)),
+				slog.Int("user_id", user.ID),
+				slog.String("username", user.Username),
+				slog.String("url", ref),
+				slog.String("mode", user.Mode),
+				slog.String("status", "download_error"),
+				slog.String("detail", "get"),
+				slog.String("error", err.Error()),
+			)
 			return fmt.Errorf("download failed: %w", err)
 		}
 		defer getResp.Body.Close()
 
 		if getResp.StatusCode != http.StatusOK {
-			d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=download_bad_status http_status=%d\n", user.ID, user.Username, src, user.Mode, getResp.StatusCode)
+			d.Logger.InfoContext(ctx, "email delivery",
+				slog.String("event", "delivery"),
+				slog.String("channel", "email"),
+				slog.String("stage", "download_bad_status"),
+				slog.String("request_id", requestid.From(ctx)),
+				slog.Int("user_id", user.ID),
+				slog.String("username", user.Username),
+				slog.String("url", ref),
+				slog.String("mode", user.Mode),
+				slog.String("status", "download_bad_status"),
+				slog.Int("http_status", getResp.StatusCode),
+			)
 			return fmt.Errorf("download bad status: %d", getResp.StatusCode)
 		}
 
@@ -78,7 +126,19 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, src string) err
 		tmpFile, err := os.CreateTemp("", "download-*-"+urlFileName)
 		if err != nil {
 			log.Println("temp file create err:", err)
-			d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=download_error stage=tempfile error=%q\n", user.ID, user.Username, src, user.Mode, err.Error())
+			d.Logger.InfoContext(ctx, "email delivery",
+				slog.String("event", "delivery"),
+				slog.String("channel", "email"),
+				slog.String("stage", "download_error"),
+				slog.String("request_id", requestid.From(ctx)),
+				slog.Int("user_id", user.ID),
+				slog.String("username", user.Username),
+				slog.String("url", ref),
+				slog.String("mode", user.Mode),
+				slog.String("status", "download_error"),
+				slog.String("detail", "tempfile"),
+				slog.String("error", err.Error()),
+			)
 			return fmt.Errorf("temp file create: %w", err)
 		}
 		defer func() {
@@ -89,7 +149,20 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, src string) err
 		written, err := io.Copy(tmpFile, getResp.Body)
 		if err != nil {
 			log.Println("io.Copy err:", err)
-			d.Logger.Printf("user_id=%d username=%s url=%s mode=%s status=download_error stage=copy written=%d error=%q\n", user.ID, user.Username, src, user.Mode, written, err.Error())
+			d.Logger.InfoContext(ctx, "email delivery",
+				slog.String("event", "delivery"),
+				slog.String("channel", "email"),
+				slog.String("stage", "download_error"),
+				slog.String("request_id", requestid.From(ctx)),
+				slog.Int("user_id", user.ID),
+				slog.String("username", user.Username),
+				slog.String("url", ref),
+				slog.String("mode", user.Mode),
+				slog.String("status", "download_error"),
+				slog.String("detail", "copy"),
+				slog.Int64("written", written),
+				slog.String("error", err.Error()),
+			)
 			return fmt.Errorf("download failed: %w", err)
 		}
 		attachmentPath = tmpFile.Name()
@@ -98,16 +171,36 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, src string) err
 		// src — путь к локальному файлу
 		info, err := os.Stat(src)
 		if err != nil {
-			d.Logger.Printf("user_id=%d username=%s path=%s mode=%s status=open_error error=%q\n", user.ID, user.Username, src, user.Mode, err.Error())
+			d.Logger.InfoContext(ctx, "email delivery",
+				slog.String("event", "delivery"),
+				slog.String("channel", "email"),
+				slog.String("stage", "open_error"),
+				slog.String("request_id", requestid.From(ctx)),
+				slog.Int("user_id", user.ID),
+				slog.String("username", user.Username),
+				slog.String("url", ref),
+				slog.String("mode", user.Mode),
+				slog.String("status", "open_error"),
+				slog.String("error", err.Error()),
+			)
 			return fmt.Errorf("stat file: %w", err)
 		}
 		size = info.Size()
 		attachmentPath = src
 	}
 
-	d.Logger.Printf(
-		"user_id=%d username=%s url=%s mode=%s status=downloaded size=%d path=%s\n",
-		user.ID, user.Username, src, user.Mode, size, attachmentPath,
+	d.Logger.InfoContext(ctx, "email delivery",
+		slog.String("event", "delivery"),
+		slog.String("channel", "email"),
+		slog.String("stage", "downloaded"),
+		slog.String("request_id", requestid.From(ctx)),
+		slog.Int("user_id", user.ID),
+		slog.String("username", user.Username),
+		slog.String("url", ref),
+		slog.String("mode", user.Mode),
+		slog.String("status", "downloaded"),
+		slog.Int64("size", size),
+		slog.String("path", logutil.TruncateString(attachmentPath, 256)),
 	)
 
 	if user.Email == "" {
@@ -120,13 +213,36 @@ func (d *EmailDelivery) SendFile(ctx context.Context, user User, src string) err
 
 	if err := d.sendEmail(user.Email, subject, body, attachmentPath); err != nil {
 		log.Println("sendEmail err:", err)
-		d.Logger.Printf("user_id=%d username=%s email=%s url=%s mode=%s status=send_error stage=smtp error=%q\n",
-			user.ID, user.Username, user.Email, src, user.Mode, err.Error())
+		d.Logger.InfoContext(ctx, "email delivery",
+			slog.String("event", "delivery"),
+			slog.String("channel", "email"),
+			slog.String("stage", "send_error"),
+			slog.String("request_id", requestid.From(ctx)),
+			slog.Int("user_id", user.ID),
+			slog.String("username", user.Username),
+			slog.String("email", user.Email),
+			slog.String("url", ref),
+			slog.String("mode", user.Mode),
+			slog.String("status", "send_error"),
+			slog.String("detail", "smtp"),
+			slog.String("error", err.Error()),
+		)
 		return fmt.Errorf("email send failed: %w", err)
 	}
 
-	d.Logger.Printf("user_id=%d username=%s email=%s url=%s mode=%s status=sent size=%d\n",
-		user.ID, user.Username, user.Email, src, user.Mode, size)
+	d.Logger.InfoContext(ctx, "email delivery",
+		slog.String("event", "delivery"),
+		slog.String("channel", "email"),
+		slog.String("stage", "sent"),
+		slog.String("request_id", requestid.From(ctx)),
+		slog.Int("user_id", user.ID),
+		slog.String("username", user.Username),
+		slog.String("email", user.Email),
+		slog.String("url", ref),
+		slog.String("mode", user.Mode),
+		slog.String("status", "sent"),
+		slog.Int64("size", size),
+	)
 
 	return nil
 }

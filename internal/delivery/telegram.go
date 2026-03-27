@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -16,12 +16,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"download_track/internal/logutil"
+	"download_track/internal/requestid"
 )
 
 type TelegramDelivery struct {
 	Token   string
 	BaseURL string
-	Logger  *log.Logger
+	Logger  *slog.Logger
 	Client  *http.Client
 }
 
@@ -31,7 +34,7 @@ type telegramAPIResponse struct {
 	Result      json.RawMessage `json:"result"`
 }
 
-func NewTelegramDelivery(token, baseURL string, logger *log.Logger) *TelegramDelivery {
+func NewTelegramDelivery(token, baseURL string, logger *slog.Logger) *TelegramDelivery {
 	if baseURL == "" {
 		baseURL = "http://telegram-bot-api:8081"
 	}
@@ -51,8 +54,19 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 		return fmt.Errorf("telegram token is empty")
 	}
 
-	d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=request\n",
-		user.ID, user.Username, user.TelegramID, src, user.Mode)
+	ref := logutil.TruncateString(src, 256)
+	d.Logger.InfoContext(ctx, "telegram delivery",
+		slog.String("event", "delivery"),
+		slog.String("channel", "telegram"),
+		slog.String("stage", "request"),
+		slog.String("request_id", requestid.From(ctx)),
+		slog.Int("user_id", user.ID),
+		slog.String("username", user.Username),
+		slog.Int64("telegram_id", user.TelegramID),
+		slog.String("url", ref),
+		slog.String("mode", user.Mode),
+		slog.String("status", "request"),
+	)
 
 	var file *os.File
 	var size int64
@@ -63,15 +77,37 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 		// src — URL: скачиваем во временный файл
 		getResp, err := d.Client.Get(src)
 		if err != nil {
-			d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=download_error error=%q\n",
-				user.ID, user.Username, user.TelegramID, src, user.Mode, err.Error())
+			d.Logger.InfoContext(ctx, "telegram delivery",
+				slog.String("event", "delivery"),
+				slog.String("channel", "telegram"),
+				slog.String("stage", "download_error"),
+				slog.String("request_id", requestid.From(ctx)),
+				slog.Int("user_id", user.ID),
+				slog.String("username", user.Username),
+				slog.Int64("telegram_id", user.TelegramID),
+				slog.String("url", ref),
+				slog.String("mode", user.Mode),
+				slog.String("status", "download_error"),
+				slog.String("error", err.Error()),
+			)
 			return fmt.Errorf("download failed: %w", err)
 		}
 		defer getResp.Body.Close()
 
 		if getResp.StatusCode != http.StatusOK {
-			d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=download_bad_status http_status=%d\n",
-				user.ID, user.Username, user.TelegramID, src, user.Mode, getResp.StatusCode)
+			d.Logger.InfoContext(ctx, "telegram delivery",
+				slog.String("event", "delivery"),
+				slog.String("channel", "telegram"),
+				slog.String("stage", "download_bad_status"),
+				slog.String("request_id", requestid.From(ctx)),
+				slog.Int("user_id", user.ID),
+				slog.String("username", user.Username),
+				slog.Int64("telegram_id", user.TelegramID),
+				slog.String("url", ref),
+				slog.String("mode", user.Mode),
+				slog.String("status", "download_bad_status"),
+				slog.Int("http_status", getResp.StatusCode),
+			)
 			return fmt.Errorf("download bad status: %d", getResp.StatusCode)
 		}
 
@@ -106,8 +142,19 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 		filePath = src
 		f, err := os.Open(src)
 		if err != nil {
-			d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d path=%s mode=%s status=open_error error=%q\n",
-				user.ID, user.Username, user.TelegramID, src, user.Mode, err.Error())
+			d.Logger.InfoContext(ctx, "telegram delivery",
+				slog.String("event", "delivery"),
+				slog.String("channel", "telegram"),
+				slog.String("stage", "open_error"),
+				slog.String("request_id", requestid.From(ctx)),
+				slog.Int("user_id", user.ID),
+				slog.String("username", user.Username),
+				slog.Int64("telegram_id", user.TelegramID),
+				slog.String("url", ref),
+				slog.String("mode", user.Mode),
+				slog.String("status", "open_error"),
+				slog.String("error", err.Error()),
+			)
 			return fmt.Errorf("open file: %w", err)
 		}
 		defer f.Close()
@@ -124,8 +171,19 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 		file = f
 	}
 
-	d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=downloaded size=%d\n",
-		user.ID, user.Username, user.TelegramID, src, user.Mode, size)
+	d.Logger.InfoContext(ctx, "telegram delivery",
+		slog.String("event", "delivery"),
+		slog.String("channel", "telegram"),
+		slog.String("stage", "downloaded"),
+		slog.String("request_id", requestid.From(ctx)),
+		slog.Int("user_id", user.ID),
+		slog.String("username", user.Username),
+		slog.Int64("telegram_id", user.TelegramID),
+		slog.String("url", ref),
+		slog.String("mode", user.Mode),
+		slog.String("status", "downloaded"),
+		slog.Int64("size", size),
+	)
 
 	// Для видео используем sendVideo — воспроизведение в чате; для остальных — sendDocument
 	useVideo := isVideoExtension(fileName)
@@ -151,7 +209,7 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 			return fmt.Errorf("write supports_streaming field: %w", err)
 		}
 		if filePath != "" {
-			if w, h, dur := getVideoMeta(d.Logger, filePath); w > 0 && h > 0 {
+			if w, h, dur := getVideoMeta(ctx, d.Logger, filePath); w > 0 && h > 0 {
 				if err := writer.WriteField("width", strconv.Itoa(w)); err != nil {
 					return fmt.Errorf("write width field: %w", err)
 				}
@@ -164,7 +222,7 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 					}
 				}
 			}
-			if thumbPath, cleanup, err := makeVideoThumbnail(d.Logger, filePath); err == nil {
+			if thumbPath, cleanup, err := makeVideoThumbnail(ctx, d.Logger, filePath); err == nil {
 				defer cleanup()
 				if thumbData, err := os.ReadFile(thumbPath); err == nil && len(thumbData) > 0 && len(thumbData) < maxThumbSize {
 					thumbPart, _ := writer.CreateFormFile("thumb", "thumb.jpg")
@@ -194,8 +252,19 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 
 	resp, err := d.Client.Do(httpReq)
 	if err != nil {
-		d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=error error=%q\n",
-			user.ID, user.Username, user.TelegramID, src, user.Mode, err.Error())
+		d.Logger.InfoContext(ctx, "telegram delivery",
+			slog.String("event", "delivery"),
+			slog.String("channel", "telegram"),
+			slog.String("stage", "http_error"),
+			slog.String("request_id", requestid.From(ctx)),
+			slog.Int("user_id", user.ID),
+			slog.String("username", user.Username),
+			slog.Int64("telegram_id", user.TelegramID),
+			slog.String("url", ref),
+			slog.String("mode", user.Mode),
+			slog.String("status", "error"),
+			slog.String("error", err.Error()),
+		)
 		return fmt.Errorf("telegram %s request failed: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
@@ -206,13 +275,35 @@ func (d *TelegramDelivery) SendFile(ctx context.Context, user User, src string) 
 	}
 
 	if !apiResp.Ok {
-		d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=api_error description=%q\n",
-			user.ID, user.Username, user.TelegramID, src, user.Mode, apiResp.Description)
+		d.Logger.InfoContext(ctx, "telegram delivery",
+			slog.String("event", "delivery"),
+			slog.String("channel", "telegram"),
+			slog.String("stage", "api_error"),
+			slog.String("request_id", requestid.From(ctx)),
+			slog.Int("user_id", user.ID),
+			slog.String("username", user.Username),
+			slog.Int64("telegram_id", user.TelegramID),
+			slog.String("url", ref),
+			slog.String("mode", user.Mode),
+			slog.String("status", "api_error"),
+			slog.String("description", apiResp.Description),
+		)
 		return fmt.Errorf("telegram api error: %s", apiResp.Description)
 	}
 
-	d.Logger.Printf("telegram delivery: user_id=%d username=%s telegram_id=%d url=%s mode=%s status=sent size=%d\n",
-		user.ID, user.Username, user.TelegramID, src, user.Mode, size)
+	d.Logger.InfoContext(ctx, "telegram delivery",
+		slog.String("event", "delivery"),
+		slog.String("channel", "telegram"),
+		slog.String("stage", "sent"),
+		slog.String("request_id", requestid.From(ctx)),
+		slog.Int("user_id", user.ID),
+		slog.String("username", user.Username),
+		slog.Int64("telegram_id", user.TelegramID),
+		slog.String("url", ref),
+		slog.String("mode", user.Mode),
+		slog.String("status", "sent"),
+		slog.Int64("size", size),
+	)
 
 	return nil
 }
@@ -240,10 +331,10 @@ type ffprobeOutput struct {
 }
 
 // getVideoMeta возвращает width, height и duration (сек) через ffprobe; при ошибке — 0, 0, 0.
-func getVideoMeta(logger *log.Logger, path string) (width, height, duration int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func getVideoMeta(ctx context.Context, logger *slog.Logger, path string) (width, height, duration int) {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ffprobe",
+	cmd := exec.CommandContext(probeCtx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
 		"-show_entries", "stream=width,height",
@@ -254,7 +345,11 @@ func getVideoMeta(logger *log.Logger, path string) (width, height, duration int)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if logger != nil {
-			logger.Printf("ffprobe %s: %v (output: %s)", path, err, string(out))
+			logger.WarnContext(ctx, "ffprobe",
+				slog.String("path", logutil.TruncateString(path, 256)),
+				slog.Any("err", err),
+				slog.String("output", string(out)),
+			)
 		}
 		return 0, 0, 0
 	}
@@ -282,7 +377,7 @@ const maxThumbSize = 200 * 1024 // Telegram: thumbnail < 200 kB
 const maxThumbDim = 320         // Telegram: ширина и высота ≤ 320
 
 // makeVideoThumbnail создаёт JPEG-превью (первый кадр, макс. maxThumbDim px, < maxThumbSize) через ffmpeg.
-func makeVideoThumbnail(logger *log.Logger, videoPath string) (thumbPath string, cleanup func(), err error) {
+func makeVideoThumbnail(ctx context.Context, logger *slog.Logger, videoPath string) (thumbPath string, cleanup func(), err error) {
 	tmp, err := os.CreateTemp("", "tgthumb-*.jpg")
 	if err != nil {
 		return "", nil, err
@@ -297,12 +392,16 @@ func makeVideoThumbnail(logger *log.Logger, videoPath string) (thumbPath string,
 		"-vframes", "1", "-q:v", "5",
 		thumbPath,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ffCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd := exec.CommandContext(ffCtx, "ffmpeg", args...)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
 		if logger != nil {
-			logger.Printf("ffmpeg thumbnail %s: %v (%s)", videoPath, runErr, string(out))
+			logger.WarnContext(ctx, "ffmpeg thumbnail",
+				slog.String("video_path", logutil.TruncateString(videoPath, 256)),
+				slog.Any("err", runErr),
+				slog.String("output", string(out)),
+			)
 		}
 		return "", nil, runErr
 	}
@@ -315,7 +414,7 @@ func makeVideoThumbnail(logger *log.Logger, videoPath string) (thumbPath string,
 		args = []string{"-y", "-i", videoPath,
 			"-vf", fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease", maxThumbDim, maxThumbDim),
 			"-vframes", "1", "-q:v", "10", thumbPath}
-		cmd = exec.CommandContext(context.Background(), "ffmpeg", args...)
+		cmd = exec.CommandContext(ctx, "ffmpeg", args...)
 		if _, runErr := cmd.CombinedOutput(); runErr != nil {
 			return "", nil, runErr
 		}
