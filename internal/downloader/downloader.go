@@ -59,7 +59,7 @@ type DefaultFetcher struct {
 // NewDefaultFetcher создаёт Fetcher. cookiesPath может быть пустым; instagramMinInterval 0 отключает ограничение.
 func NewDefaultFetcher(ytDlpTimeout time.Duration, cookiesPath string, instagramMinInterval time.Duration, ytDlpSleepInterval int) *DefaultFetcher {
 	if ytDlpTimeout <= 0 {
-		ytDlpTimeout = 10 * time.Minute
+		ytDlpTimeout = 20 * time.Minute
 	}
 	return &DefaultFetcher{
 		HTTPClient:           &http.Client{Timeout: 30 * time.Second},

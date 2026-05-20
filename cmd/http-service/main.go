@@ -99,7 +99,7 @@ func main() {
 		}
 	}
 	fetcher := downloader.NewDefaultFetcher(
-		10*time.Minute,
+		20*time.Minute,
 		cookiesPath,
 		time.Duration(instagramMinIntervalSec)*time.Second,
 		ytDlpSleepSec,
